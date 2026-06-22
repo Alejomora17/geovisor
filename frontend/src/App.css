@@ -865,7 +865,7 @@
    CELULAR
 ================================= */
 
-@media (max-width: 768px) {
+@media (max-width: 920px) {
   .map-section {
     height: 72vh;
     min-height: 520px;

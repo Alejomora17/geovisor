@@ -2,54 +2,148 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
-const proj4 = require("proj4");
 
 const app = express();
 
-const PORT = process.env.PORT || 3001;
-const CERTIFICADO_PASSWORD = process.env.CERTIFICADO_PASSWORD || "1234";
-const DATA_DIR = path.join(__dirname, "data");
-const DEFAULT_LIMIT = Number(process.env.LIMIT_PREDIOS_BBOX || 5000);
+const PORT = Number(process.env.PORT || 3001);
+const CERTIFICADO_PASSWORD =
+    process.env.CERTIFICADO_PASSWORD || "1234";
+const DATA_DIR = path.join(__dirname, "data", "guataqui");
+const DEFAULT_LAYER_LIMIT = Number(
+    process.env.LIMIT_ELEMENTOS_CAPA || process.env.LIMIT_PREDIOS_BBOX || 5000
+);
+const MAX_LAYER_LIMIT = Number(process.env.MAX_ELEMENTOS_CAPA || 10000);
+
+const MAP_DEFAULTS = {
+    center: [4.517973, -74.789503],
+    zoom: 16,
+};
 
 const FRONTEND_URLS = (
     process.env.FRONTEND_URLS ||
     "http://localhost:5173,http://127.0.0.1:5173"
 )
     .split(",")
-    .map((url) => url.trim())
+    .map((url) => url.trim().replace(/\/$/, ""))
     .filter(Boolean);
 
-/*
-  Proyecciones comunes para Colombia.
+const LAYER_CONFIG = [
+    {
+        id: "r-vereda",
+        file: "R_VEREDA_J.json",
+        name: "Veredas rurales",
+        description: "Límites y nombres de las veredas de Guataquí.",
+        group: "División territorial",
+        geometryKind: "polygon",
+        defaultVisible: false,
+        searchable: false,
+        certificateSource: false,
+        order: 10,
+        style: {
+            color: "#4d7c0f",
+            fillColor: "#bef264",
+            weight: 2,
+            fillOpacity: 0.08,
+        },
+    },
+    {
+        id: "u-barrio",
+        file: "U_BARRIO_J.json",
+        name: "Barrios urbanos",
+        description: "Sectores o barrios urbanos de Guataquí.",
+        group: "División territorial",
+        geometryKind: "polygon",
+        defaultVisible: false,
+        searchable: false,
+        certificateSource: false,
+        order: 20,
+        style: {
+            color: "#0369a1",
+            fillColor: "#38bdf8",
+            weight: 2,
+            fillOpacity: 0.1,
+        },
+    },
+    {
+        id: "vias",
+        file: "VIAS.geojson",
+        name: "Red vial",
+        description: "Elementos viales disponibles para el área de estudio.",
+        group: "Infraestructura",
+        geometryKind: "line",
+        defaultVisible: false,
+        searchable: false,
+        certificateSource: false,
+        order: 30,
+        style: {
+            color: "#475569",
+            weight: 2,
+            opacity: 0.85,
+        },
+    },
+    {
+        id: "r-terreno",
+        file: "R_TERRENO_J.json",
+        name: "Terrenos rurales",
+        description: "Predios o terrenos de la zona rural de Guataquí.",
+        group: "Catastro predial",
+        geometryKind: "polygon",
+        defaultVisible: true,
+        searchable: true,
+        certificateSource: true,
+        order: 40,
+        style: {
+            color: "#4d7c0f",
+            fillColor: "#84cc16",
+            weight: 1.3,
+            fillOpacity: 0.2,
+        },
+    },
+    {
+        id: "u-terreno",
+        file: "U_TERRENO_J.json",
+        name: "Terrenos urbanos",
+        description: "Predios o terrenos de la zona urbana de Guataquí.",
+        group: "Catastro predial",
+        geometryKind: "polygon",
+        defaultVisible: true,
+        searchable: true,
+        certificateSource: true,
+        order: 50,
+        style: {
+            color: "#0f766e",
+            fillColor: "#14b8a6",
+            weight: 1.4,
+            fillOpacity: 0.28,
+        },
+    },
+    {
+        id: "u-construccion",
+        file: "U_CONSTRUCCION_J.json",
+        name: "Construcciones urbanas",
+        description: "Construcciones relacionadas con los terrenos urbanos.",
+        group: "Catastro predial",
+        geometryKind: "polygon",
+        defaultVisible: false,
+        searchable: false,
+        certificateSource: false,
+        order: 60,
+        style: {
+            color: "#b45309",
+            fillColor: "#f59e0b",
+            weight: 1.2,
+            fillOpacity: 0.45,
+        },
+    },
+];
 
-  EPSG:9377: MAGNA-SIRGAS / Origen-Nacional
-  EPSG:3116: MAGNA-SIRGAS / Colombia Bogotá zone
-  EPSG:3857: Web Mercator
-*/
-
-proj4.defs(
-    "EPSG:9377",
-    "+proj=tmerc +lat_0=4 +lon_0=-73 +k=0.9992 +x_0=5000000 +y_0=2000000 +ellps=GRS80 +units=m +no_defs +type=crs"
-);
-
-proj4.defs(
-    "EPSG:3116",
-    "+proj=tmerc +lat_0=4.596200416666666 +lon_0=-74.07750791666666 +k=1 +x_0=1000000 +y_0=1000000 +ellps=GRS80 +units=m +no_defs +type=crs"
-);
-
-proj4.defs(
-    "EPSG:3857",
-    "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs +type=crs"
-);
-
-const PROYECCIONES_SOPORTADAS = new Set([
-    "EPSG:9377",
-    "EPSG:3116",
-    "EPSG:3857",
-]);
+app.disable("x-powered-by");
+app.use(compression());
+app.use(express.json({ limit: "10mb" }));
 
 app.use(
     cors({
@@ -57,373 +151,154 @@ app.use(
             if (
                 !origin ||
                 FRONTEND_URLS.includes("*") ||
-                FRONTEND_URLS.includes(origin)
+                FRONTEND_URLS.includes(origin.replace(/\/$/, ""))
             ) {
                 return callback(null, true);
             }
 
             return callback(new Error(`CORS bloqueado para: ${origin}`));
         },
+        methods: ["GET", "POST", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
     })
 );
 
-app.use(express.json({ limit: "50mb" }));
-
-function normalizarTexto(texto) {
-    return String(texto || "")
+function normalizeText(value) {
+    return String(value ?? "")
         .trim()
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .toUpperCase();
 }
 
-function normalizarClave(clave) {
-    return String(clave || "")
-        .trim()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9]/g, "");
+function toFiniteNumber(value, fallback = 0) {
+    if (value === null || value === undefined || value === "") {
+        return fallback;
+    }
+
+    const normalized =
+        typeof value === "string" ? value.trim().replace(",", ".") : value;
+    const number = Number(normalized);
+
+    return Number.isFinite(number) ? number : fallback;
 }
 
-function obtenerCampo(objeto, posiblesNombres, valorPorDefecto = "") {
-    const indice = {};
+function formatSquareMeters(value) {
+    const number = toFiniteNumber(value, 0);
 
-    Object.entries(objeto || {}).forEach(([clave, valor]) => {
-        indice[normalizarClave(clave)] = valor;
-    });
-
-    for (const nombre of posiblesNombres) {
-        const claveNormalizada = normalizarClave(nombre);
-
-        if (
-            Object.prototype.hasOwnProperty.call(indice, claveNormalizada) &&
-            indice[claveNormalizada] !== null &&
-            indice[claveNormalizada] !== undefined &&
-            indice[claveNormalizada] !== ""
-        ) {
-            return indice[claveNormalizada];
-        }
+    if (number <= 0) {
+        return "Sin información";
     }
 
-    return valorPorDefecto;
+    return `${new Intl.NumberFormat("es-CO", {
+        maximumFractionDigits: 2,
+    }).format(number)} m²`;
 }
 
-function convertirNumero(valor) {
-    if (valor === null || valor === undefined || valor === "") return 0;
+function formatMeters(value) {
+    const number = toFiniteNumber(value, 0);
 
-    const numero = Number(String(valor).replace(",", "."));
+    if (number <= 0) {
+        return "Sin información";
+    }
 
-    return Number.isFinite(numero) ? numero : 0;
+    return `${new Intl.NumberFormat("es-CO", {
+        maximumFractionDigits: 2,
+    }).format(number)} m`;
 }
 
-function formatearArea(valor) {
-    if (valor === null || valor === undefined || valor === "") {
-        return "Sin área registrada";
+function formatDate(value) {
+    const timestamp = toFiniteNumber(value, 0);
+
+    if (!timestamp) {
+        return "Sin información";
     }
 
-    const numero = convertirNumero(valor);
-
-    if (numero > 0) {
-        return `${numero.toLocaleString("es-CO")} m²`;
+    try {
+        return new Intl.DateTimeFormat("es-CO", {
+            dateStyle: "medium",
+        }).format(new Date(timestamp));
+    } catch {
+        return "Sin información";
     }
-
-    return String(valor);
 }
 
-function obtenerWkid(spatialReference) {
-    if (!spatialReference) return null;
-
-    if (typeof spatialReference === "number") {
-        return spatialReference;
+function visitCoordinatePairs(node, callback) {
+    if (!Array.isArray(node)) {
+        return;
     }
-
-    const wkid =
-        spatialReference.latestWkid ||
-        spatialReference.wkid ||
-        spatialReference.WKID ||
-        spatialReference.LatestWkid;
-
-    return wkid ? Number(wkid) : null;
-}
-
-function obtenerSpatialReferenceDesdeNodo(nodo, referenciaPadre = null) {
-    if (!nodo || typeof nodo !== "object") return referenciaPadre;
-
-    if (nodo.spatialReference) return nodo.spatialReference;
-    if (nodo.spatial_reference) return nodo.spatial_reference;
-
-    if (nodo.crs?.properties?.name) {
-        const match = String(nodo.crs.properties.name).match(/EPSG[:/](\d+)/i);
-
-        if (match) {
-            return {
-                wkid: Number(match[1]),
-            };
-        }
-    }
-
-    return referenciaPadre;
-}
-
-function coordenadaEstaEnColombia(lat, lng) {
-    return lat >= -5 && lat <= 15 && lng >= -85 && lng <= -65;
-}
-
-function transformarCoordenadaProyectada(x, y, spatialReference) {
-    const wkid = obtenerWkid(spatialReference);
-    const candidatos = [];
-
-    if (wkid) {
-        candidatos.push(`EPSG:${wkid}`);
-    }
-
-    candidatos.push("EPSG:9377");
-    candidatos.push("EPSG:3116");
-    candidatos.push("EPSG:3857");
-
-    const candidatosUnicos = [...new Set(candidatos)];
-
-    for (const epsg of candidatosUnicos) {
-        if (!PROYECCIONES_SOPORTADAS.has(epsg)) {
-            continue;
-        }
-
-        try {
-            const [lng, lat] = proj4(epsg, "EPSG:4326", [x, y]);
-
-            if (
-                Number.isFinite(lat) &&
-                Number.isFinite(lng) &&
-                coordenadaEstaEnColombia(lat, lng)
-            ) {
-                return [lat, lng];
-            }
-        } catch {
-            // Si una proyección falla, se intenta con la siguiente.
-        }
-    }
-
-    return null;
-}
-
-function convertirParALatLng(par, spatialReference) {
-    let a;
-    let b;
-
-    if (Array.isArray(par)) {
-        a = Number(par[0]);
-        b = Number(par[1]);
-    } else if (par && typeof par === "object") {
-        a = Number(par.x ?? par.lng ?? par.lon ?? par.longitud ?? par.longitude);
-        b = Number(par.y ?? par.lat ?? par.latitude ?? par.latitud);
-    }
-
-    if (!Number.isFinite(a) || !Number.isFinite(b)) {
-        return null;
-    }
-
-    /*
-      Coordenadas geográficas:
-      GeoJSON / ArcGIS suelen venir como [longitud, latitud].
-      Leaflet necesita [latitud, longitud].
-    */
-    if (Math.abs(a) <= 180 && Math.abs(b) <= 180) {
-        if (a < 0 && b > 0) {
-            return [b, a];
-        }
-
-        if (a > 0 && b < 0) {
-            return [a, b];
-        }
-
-        return [b, a];
-    }
-
-    /*
-      Coordenadas proyectadas:
-      Ejemplo: 4900000, 2000000.
-    */
-    return transformarCoordenadaProyectada(a, b, spatialReference);
-}
-
-function limpiarAnilloCoordenadas(coords) {
-    if (!Array.isArray(coords) || coords.length < 3) {
-        return [];
-    }
-
-    const limpio = [...coords];
-
-    const primero = limpio[0];
-    const ultimo = limpio[limpio.length - 1];
 
     if (
-        primero &&
-        ultimo &&
-        primero[0] === ultimo[0] &&
-        primero[1] === ultimo[1]
+        node.length >= 2 &&
+        Number.isFinite(Number(node[0])) &&
+        Number.isFinite(Number(node[1]))
     ) {
-        limpio.pop();
+        callback(Number(node[0]), Number(node[1]));
+        return;
     }
 
-    return limpio;
+    node.forEach((child) => visitCoordinatePairs(child, callback));
 }
 
-function extraerCoordsDesdeGeometria(geometry, spatialReference) {
-    if (!geometry || typeof geometry !== "object") {
-        return [];
-    }
-
-    const sr = geometry.spatialReference || spatialReference;
-
-    /*
-      ArcGIS / Esri JSON:
-      geometry: {
-        rings: [[[x, y], [x, y], ...]]
-      }
-    */
-    if (Array.isArray(geometry.rings)) {
-        const ring = geometry.rings[0] || [];
-
-        const coords = ring
-            .map((par) => convertirParALatLng(par, sr))
-            .filter(Boolean);
-
-        return limpiarAnilloCoordenadas(coords);
-    }
-
-    /*
-      GeoJSON Polygon.
-    */
-    if (geometry.type === "Polygon" && Array.isArray(geometry.coordinates)) {
-        const ring = geometry.coordinates[0] || [];
-
-        const coords = ring
-            .map((par) => convertirParALatLng(par, sr))
-            .filter(Boolean);
-
-        return limpiarAnilloCoordenadas(coords);
-    }
-
-    /*
-      GeoJSON MultiPolygon.
-      Para la BETA se toma el primer polígono.
-    */
-    if (geometry.type === "MultiPolygon" && Array.isArray(geometry.coordinates)) {
-        const ring = geometry.coordinates[0]?.[0] || [];
-
-        const coords = ring
-            .map((par) => convertirParALatLng(par, sr))
-            .filter(Boolean);
-
-        return limpiarAnilloCoordenadas(coords);
-    }
-
-    /*
-      Algunos archivos traen "coordinates" sin "type".
-    */
-    if (Array.isArray(geometry.coordinates)) {
-        const possibleRing = Array.isArray(geometry.coordinates[0]?.[0])
-            ? geometry.coordinates[0]
-            : geometry.coordinates;
-
-        const coords = possibleRing
-            .map((par) => convertirParALatLng(par, sr))
-            .filter(Boolean);
-
-        return limpiarAnilloCoordenadas(coords);
-    }
-
-    return [];
-}
-
-function calcularBBox(coords) {
-    const lats = coords.map(([lat]) => lat);
-    const lngs = coords.map(([, lng]) => lng);
-
-    return {
-        minLat: Math.min(...lats),
-        minLng: Math.min(...lngs),
-        maxLat: Math.max(...lats),
-        maxLng: Math.max(...lngs),
-    };
-}
-
-function calcularCentro(coords) {
-    if (!Array.isArray(coords) || coords.length === 0) {
+function calculateGeometryBBox(geometry) {
+    if (!geometry || !Array.isArray(geometry.coordinates)) {
         return null;
     }
 
-    const total = coords.reduce(
-        (acc, [lat, lng]) => {
-            acc.lat += lat;
-            acc.lng += lng;
-            acc.count += 1;
-            return acc;
-        },
-        {
-            lat: 0,
-            lng: 0,
-            count: 0,
-        }
-    );
+    let minLng = Infinity;
+    let minLat = Infinity;
+    let maxLng = -Infinity;
+    let maxLat = -Infinity;
 
-    return {
-        lat: total.lat / total.count,
-        lng: total.lng / total.count,
-    };
+    visitCoordinatePairs(geometry.coordinates, (lng, lat) => {
+        minLng = Math.min(minLng, lng);
+        minLat = Math.min(minLat, lat);
+        maxLng = Math.max(maxLng, lng);
+        maxLat = Math.max(maxLat, lat);
+    });
+
+    if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) {
+        return null;
+    }
+
+    return { minLng, minLat, maxLng, maxLat };
 }
 
-function obtenerCentroBbox(bbox) {
+function getBBoxCenter(bbox) {
     if (!bbox) return null;
 
     return {
-        lat: (bbox.minLat + bbox.maxLat) / 2,
         lng: (bbox.minLng + bbox.maxLng) / 2,
+        lat: (bbox.minLat + bbox.maxLat) / 2,
     };
 }
 
-function parseBbox(valor) {
-    if (!valor) return null;
+function unionBBoxes(bboxes) {
+    const valid = bboxes.filter(Boolean);
 
-    const partes = String(valor)
-        .split(",")
-        .map((item) => Number(item));
-
-    if (partes.length !== 4 || partes.some((numero) => !Number.isFinite(numero))) {
+    if (!valid.length) {
         return null;
     }
 
-    const [minLng, minLat, maxLng, maxLat] = partes;
-
-    return {
-        minLng,
-        minLat,
-        maxLng,
-        maxLat,
-    };
+    return valid.reduce(
+        (result, bbox) => ({
+            minLng: Math.min(result.minLng, bbox.minLng),
+            minLat: Math.min(result.minLat, bbox.minLat),
+            maxLng: Math.max(result.maxLng, bbox.maxLng),
+            maxLat: Math.max(result.maxLat, bbox.maxLat),
+        }),
+        {
+            minLng: Infinity,
+            minLat: Infinity,
+            maxLng: -Infinity,
+            maxLat: -Infinity,
+        }
+    );
 }
 
-function parseCenter(valor) {
-    if (!valor) return null;
+function bboxIntersects(a, b) {
+    if (!a || !b) return false;
 
-    const partes = String(valor)
-        .split(",")
-        .map((item) => Number(item));
-
-    if (partes.length !== 2 || partes.some((numero) => !Number.isFinite(numero))) {
-        return null;
-    }
-
-    const [lng, lat] = partes;
-
-    return {
-        lng,
-        lat,
-    };
-}
-
-function bboxIntersecta(a, b) {
     return (
         a.minLng <= b.maxLng &&
         a.maxLng >= b.minLng &&
@@ -432,746 +307,1177 @@ function bboxIntersecta(a, b) {
     );
 }
 
-function obtenerCentroPredio(predio) {
-    if (
-        predio.center &&
-        Number.isFinite(predio.center.lat) &&
-        Number.isFinite(predio.center.lng)
-    ) {
-        return predio.center;
+function parseBBox(value) {
+    if (!value) return null;
+
+    const parts = String(value)
+        .split(",")
+        .map((item) => Number(item));
+
+    if (parts.length !== 4 || parts.some((item) => !Number.isFinite(item))) {
+        return null;
     }
 
-    if (predio.bbox) {
-        return obtenerCentroBbox(predio.bbox);
+    const [minLng, minLat, maxLng, maxLat] = parts;
+
+    if (minLng > maxLng || minLat > maxLat) {
+        return null;
     }
 
-    return calcularCentro(predio.coords);
+    return { minLng, minLat, maxLng, maxLat };
 }
 
-function distanciaCuadradaCentro(predio, centro) {
-    const centroPredio = obtenerCentroPredio(predio);
+function parseCenter(value) {
+    if (!value) return null;
 
-    if (!centroPredio || !centro) {
+    const parts = String(value)
+        .split(",")
+        .map((item) => Number(item));
+
+    if (parts.length !== 2 || parts.some((item) => !Number.isFinite(item))) {
+        return null;
+    }
+
+    return {
+        lng: parts[0],
+        lat: parts[1],
+    };
+}
+
+function parseLimit(value, fallback = DEFAULT_LAYER_LIMIT) {
+    if (value === undefined || value === null || value === "") {
+        return Math.max(0, Math.min(fallback, MAX_LAYER_LIMIT));
+    }
+
+    const parsed = Number(value);
+
+    if (!Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(fallback, MAX_LAYER_LIMIT));
+    }
+
+    if (parsed <= 0) {
+        return 0;
+    }
+
+    return Math.min(Math.floor(parsed), MAX_LAYER_LIMIT);
+}
+
+function distanceSquaredToBBox(record, center) {
+    if (!record?.bbox || !center) {
         return Number.MAX_SAFE_INTEGER;
     }
-
-    const difLat = centroPredio.lat - centro.lat;
-    const difLng = centroPredio.lng - centro.lng;
-
-    return difLat * difLat + difLng * difLng;
-}
-
-function distanciaCuadradaABbox(predio, centro) {
-    if (!predio.bbox || !centro) {
-        return distanciaCuadradaCentro(predio, centro);
-    }
-
-    const bbox = predio.bbox;
 
     let dx = 0;
     let dy = 0;
 
-    if (centro.lng < bbox.minLng) {
-        dx = bbox.minLng - centro.lng;
-    } else if (centro.lng > bbox.maxLng) {
-        dx = centro.lng - bbox.maxLng;
+    if (center.lng < record.bbox.minLng) {
+        dx = record.bbox.minLng - center.lng;
+    } else if (center.lng > record.bbox.maxLng) {
+        dx = center.lng - record.bbox.maxLng;
     }
 
-    if (centro.lat < bbox.minLat) {
-        dy = bbox.minLat - centro.lat;
-    } else if (centro.lat > bbox.maxLat) {
-        dy = centro.lat - bbox.maxLat;
+    if (center.lat < record.bbox.minLat) {
+        dy = record.bbox.minLat - center.lat;
+    } else if (center.lat > record.bbox.maxLat) {
+        dy = center.lat - record.bbox.maxLat;
     }
 
     return dx * dx + dy * dy;
 }
 
-function ordenarPorCercaniaAlCentro(lista, centro) {
-    if (!centro) return lista;
+function distanceSquaredToCenter(record, center) {
+    if (!record?.center || !center) {
+        return Number.MAX_SAFE_INTEGER;
+    }
 
-    return [...lista].sort((a, b) => {
-        const distanciaBboxA = distanciaCuadradaABbox(a, centro);
-        const distanciaBboxB = distanciaCuadradaABbox(b, centro);
+    const dx = record.center.lng - center.lng;
+    const dy = record.center.lat - center.lat;
 
-        if (distanciaBboxA !== distanciaBboxB) {
-            return distanciaBboxA - distanciaBboxB;
+    return dx * dx + dy * dy;
+}
+
+function sortRecordsByCenter(records, center) {
+    if (!center) return records;
+
+    return [...records].sort((a, b) => {
+        const bboxDistanceA = distanceSquaredToBBox(a, center);
+        const bboxDistanceB = distanceSquaredToBBox(b, center);
+
+        if (bboxDistanceA !== bboxDistanceB) {
+            return bboxDistanceA - bboxDistanceB;
         }
 
-        return distanciaCuadradaCentro(a, centro) - distanciaCuadradaCentro(b, centro);
+        return (
+            distanceSquaredToCenter(a, center) -
+            distanceSquaredToCenter(b, center)
+        );
     });
 }
 
-function extraerFeatureSetsDesdeJson(jsonData) {
-    const featureSets = [];
+function buildStableFeatureId(layerId, feature, index) {
+    const properties = feature?.properties || {};
+    const sourceId =
+        feature?.id ??
+        properties.OBJECTID ??
+        properties.CODIGO ??
+        properties.PK_CUE ??
+        index + 1;
 
-    function recorrer(nodo, spatialReferencePadre = null) {
-        if (!nodo) return;
-
-        if (Array.isArray(nodo)) {
-            const primerElemento = nodo[0];
-
-            if (
-                primerElemento &&
-                typeof primerElemento === "object" &&
-                (primerElemento.geometry ||
-                    primerElemento.attributes ||
-                    primerElemento.properties)
-            ) {
-                featureSets.push({
-                    features: nodo,
-                    spatialReference: spatialReferencePadre,
-                });
-
-                return;
-            }
-
-            nodo.forEach((item) => recorrer(item, spatialReferencePadre));
-            return;
-        }
-
-        if (typeof nodo !== "object") return;
-
-        const spatialReferenceLocal = obtenerSpatialReferenceDesdeNodo(
-            nodo,
-            spatialReferencePadre
-        );
-
-        if (Array.isArray(nodo.features)) {
-            featureSets.push({
-                features: nodo.features,
-                spatialReference: spatialReferenceLocal,
-            });
-
-            return;
-        }
-
-        if (nodo.featureSet && Array.isArray(nodo.featureSet.features)) {
-            featureSets.push({
-                features: nodo.featureSet.features,
-                spatialReference:
-                    nodo.featureSet.spatialReference || spatialReferenceLocal,
-            });
-
-            return;
-        }
-
-        if (Array.isArray(nodo.data)) {
-            featureSets.push({
-                features: nodo.data,
-                spatialReference: spatialReferenceLocal,
-            });
-
-            return;
-        }
-
-        if (Array.isArray(nodo.records)) {
-            featureSets.push({
-                features: nodo.records,
-                spatialReference: spatialReferenceLocal,
-            });
-
-            return;
-        }
-
-        if (Array.isArray(nodo.rows)) {
-            featureSets.push({
-                features: nodo.rows,
-                spatialReference: spatialReferenceLocal,
-            });
-
-            return;
-        }
-
-        if (Array.isArray(nodo.layers)) {
-            nodo.layers.forEach((layer) => recorrer(layer, spatialReferenceLocal));
-        }
-
-        if (Array.isArray(nodo.results)) {
-            nodo.results.forEach((result) => recorrer(result, spatialReferenceLocal));
-        }
-    }
-
-    recorrer(jsonData);
-
-    return featureSets;
+    return `${layerId}-${String(sourceId)}`;
 }
 
-function convertirFeatureAPredio(feature, index, nombreArchivo, spatialReference) {
-    const properties = feature.properties || feature.attributes || feature;
-    const geometry = feature.geometry || feature.geom || feature.shape || {};
+function loadLayer(config) {
+    const filePath = path.join(DATA_DIR, config.file);
 
-    const coords = extraerCoordsDesdeGeometria(geometry, spatialReference);
-
-    if (!coords || coords.length < 3) {
-        return null;
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`No se encontró el archivo ${config.file}`);
     }
 
-    const codigo =
-        obtenerCampo(properties, [
-            "CODIGO",
-            "codigo",
-            "CODIGO_ANTERIOR",
-            "codigo_anterior",
-            "CODIGO_PREDIAL",
-            "codigo_predial",
-            "CEDULA_CATASTRAL",
-            "cedula_catastral",
-            "CEDULA_CAT",
-            "cedula_cat",
-            "NUM_PREDIAL",
-            "num_predial",
-            "NUMERO_PREDIAL",
-            "numero_predial",
-            "ID_PREDIO",
-            "id_predio",
-            "TERRENO_CODIGO",
-            "terreno_codigo",
-            "OBJECTID",
-            "objectid",
-            "FID",
-            "fid",
-        ]) || `PREDIO-${index + 1}`;
+    const raw = fs.readFileSync(filePath, "utf8");
+    const geojson = JSON.parse(raw.replace(/^\uFEFF/, ""));
 
-    const propietario =
-        obtenerCampo(properties, [
-            "PROPIETARIO",
-            "propietario",
-            "NOMBRE_PROPIETARIO",
-            "nombre_propietario",
-            "NOMBRE",
-            "nombre",
-            "TITULAR",
-            "titular",
-            "TERCERO",
-            "tercero",
-        ]) || "Sin información";
+    if (geojson.type !== "FeatureCollection" || !Array.isArray(geojson.features)) {
+        throw new Error(`${config.file} no es un FeatureCollection válido`);
+    }
 
-    const direccion =
-        obtenerCampo(properties, [
-            "DIRECCION",
-            "direccion",
-            "DIR",
-            "dir",
-            "DIR_PREDIO",
-            "dir_predio",
-            "NOMENCLATURA",
-            "nomenclatura",
-            "NOMENCLA",
-            "nomencla",
-            "UBICACION",
-            "ubicacion",
-        ]) || "Sin dirección registrada";
+    const records = geojson.features
+        .map((sourceFeature, index) => {
+            const bbox = calculateGeometryBBox(sourceFeature.geometry);
 
-    const matricula =
-        obtenerCampo(properties, [
-            "MATRICULA",
-            "matricula",
-            "MATRICULA_INMOBILIARIA",
-            "matricula_inmobiliaria",
-            "MAT_INMOB",
-            "mat_inmob",
-            "FOLIO",
-            "folio",
-        ]) || "Sin matrícula";
+            if (!bbox) {
+                return null;
+            }
 
-    const areaRaw =
-        obtenerCampo(properties, [
-            "AREA",
-            "area",
-            "AREA_M2",
-            "area_m2",
-            "AREA_TERRENO",
-            "area_terreno",
-            "AREATERRENO",
-            "areaterreno",
-            "AREA_TERRE",
-            "area_terre",
-            "SHAPE_AREA",
-            "shape_area",
-            "Shape__Area",
-            "shape__area",
-            "Shape_Area",
-            "shape_area",
-        ]) || "";
+            const feature = {
+                type: "Feature",
+                id: buildStableFeatureId(config.id, sourceFeature, index),
+                geometry: sourceFeature.geometry,
+                properties: {
+                    ...(sourceFeature.properties || {}),
+                    _layerId: config.id,
+                },
+            };
 
-    const uso =
-        obtenerCampo(properties, [
-            "USO",
-            "uso",
-            "USO_SUELO",
-            "uso_suelo",
-            "DESTINO",
-            "destino",
-            "DESTINO_ECONOMICO",
-            "destino_economico",
-            "ACTIVIDAD",
-            "actividad",
-            "TIPO_USO",
-            "tipo_uso",
-        ]) || "Sin uso registrado";
+            return {
+                feature,
+                bbox,
+                center: getBBoxCenter(bbox),
+            };
+        })
+        .filter(Boolean);
 
-    const estado =
-        obtenerCampo(properties, ["ESTADO", "estado", "CONDICION", "condicion"]) ||
-        "Activo";
+    const extent = unionBBoxes(records.map((record) => record.bbox));
 
-    const barrio =
-        obtenerCampo(properties, [
-            "BARRIO",
-            "barrio",
-            "SECTOR",
-            "sector",
-            "VEREDA",
-            "vereda",
-            "VEREDA_CODIGO",
-            "vereda_codigo",
-            "ZONA",
-            "zona",
-        ]) || "Sin sector";
+    const fields = Array.from(
+        records.reduce((set, record) => {
+            Object.keys(record.feature.properties || {}).forEach((field) => {
+                if (!field.startsWith("_")) {
+                    set.add(field);
+                }
+            });
 
-    const bbox = calcularBBox(coords);
-    const center = calcularCentro(coords);
+            return set;
+        }, new Set())
+    );
 
     return {
-        id: `${nombreArchivo}-${index + 1}`,
-        codigo: String(codigo),
-        propietario: String(propietario),
-        direccion: String(direccion),
-        matricula: String(matricula),
-        area: formatearArea(areaRaw),
-        areaM2: convertirNumero(areaRaw),
-        uso: String(uso),
-        estado: String(estado),
-        barrio: String(barrio),
-        observacion: `Predio cargado desde archivo JSON: ${nombreArchivo}.`,
-        coords,
-        bbox,
-        center,
+        config,
+        records,
+        extent,
+        fields,
     };
 }
 
-function prediosSimuladosGuataqui() {
-    const prediosDemo = [
-        {
-            id: 1,
-            codigo: "GUA-PREDIO-001",
-            propietario: "Propietario simulado 001",
-            direccion: "Calle 1 # 2 - 10",
-            matricula: "GUA-001-2026",
-            area: "520 m²",
-            areaM2: 520,
-            uso: "Residencial",
-            estado: "Activo",
-            barrio: "Casco urbano",
-            observacion:
-                "Predio simulado ubicado en el casco urbano de Guataquí para pruebas del geovisor BETA.",
-            coords: [
-                [4.51735, -74.79095],
-                [4.51735, -74.79055],
-                [4.51698, -74.79055],
-                [4.51698, -74.79095],
-            ],
-        },
-        {
-            id: 2,
-            codigo: "GUA-PREDIO-002",
-            propietario: "Propietario simulado 002",
-            direccion: "Carrera 2 # 1 - 25",
-            matricula: "GUA-002-2026",
-            area: "430 m²",
-            areaM2: 430,
-            uso: "Comercial",
-            estado: "Activo",
-            barrio: "Casco urbano",
-            observacion: "Predio comercial simulado.",
-            coords: [
-                [4.51735, -74.79048],
-                [4.51735, -74.79008],
-                [4.51698, -74.79008],
-                [4.51698, -74.79048],
-            ],
-        },
-    ];
-
-    return prediosDemo.map((predio) => ({
-        ...predio,
-        bbox: calcularBBox(predio.coords),
-        center: calcularCentro(predio.coords),
-    }));
+function publicLayerInfo(layer) {
+    return {
+        id: layer.config.id,
+        name: layer.config.name,
+        description: layer.config.description,
+        group: layer.config.group,
+        geometryKind: layer.config.geometryKind,
+        defaultVisible: layer.config.defaultVisible,
+        searchable: layer.config.searchable,
+        certificateSource: layer.config.certificateSource,
+        order: layer.config.order,
+        style: layer.config.style,
+        count: layer.records.length,
+        extent: layer.extent,
+        fields: layer.fields,
+    };
 }
 
-function cargarPrediosDesdeJson() {
+function loadAllLayers() {
     if (!fs.existsSync(DATA_DIR)) {
-        console.warn("No existe la carpeta backend/data. Usando datos simulados.");
-        return prediosSimuladosGuataqui();
+        throw new Error(
+            `No existe la carpeta de datos: ${DATA_DIR}. Crea backend/data/guataqui.`
+        );
     }
 
-    const archivos = fs
-        .readdirSync(DATA_DIR)
-        .filter((archivo) => archivo.toLowerCase().endsWith(".json"));
+    const store = new Map();
 
-    if (archivos.length === 0) {
-        console.warn("No se encontraron archivos .json en backend/data.");
-        return prediosSimuladosGuataqui();
+    for (const config of LAYER_CONFIG) {
+        const layer = loadLayer(config);
+        store.set(config.id, layer);
+
+        console.log(
+            `Capa cargada: ${config.name} (${layer.records.length} elementos)`
+        );
     }
 
-    const prediosCargados = [];
+    return store;
+}
 
-    archivos.forEach((archivo) => {
-        const filePath = path.join(DATA_DIR, archivo);
+let layerStore;
 
-        try {
-            const rawData = fs.readFileSync(filePath, "utf8");
-            const jsonData = JSON.parse(rawData);
+try {
+    layerStore = loadAllLayers();
+} catch (error) {
+    console.error("No fue posible iniciar las capas de Guataquí:");
+    console.error(error.message);
+    process.exit(1);
+}
 
-            const featureSets = extraerFeatureSetsDesdeJson(jsonData);
+const veredaNameByCode = new Map();
+const barrioNameBySector = new Map();
+const constructionsByTerrainCode = new Map();
+const terrainRecords = [];
+const terrainByCode = new Map();
+const terrainByPreviousCode = new Map();
 
-            console.log(
-                `Archivo ${archivo}: ${featureSets.length} conjunto(s) encontrado(s).`
-            );
+function buildIndexes() {
+    veredaNameByCode.clear();
+    barrioNameBySector.clear();
+    constructionsByTerrainCode.clear();
+    terrainRecords.length = 0;
+    terrainByCode.clear();
+    terrainByPreviousCode.clear();
 
-            featureSets.forEach((featureSet, setIndex) => {
-                const features = featureSet.features || [];
-                const spatialReference = featureSet.spatialReference;
-                const wkid = obtenerWkid(spatialReference);
+    const veredaLayer = layerStore.get("r-vereda");
+    const barrioLayer = layerStore.get("u-barrio");
+    const constructionLayer = layerStore.get("u-construccion");
 
-                console.log(
-                    `Archivo ${archivo}, conjunto ${setIndex + 1}: ${features.length} registros.`
-                );
+    veredaLayer?.records.forEach((record) => {
+        const properties = record.feature.properties || {};
+        const code = String(properties.CODIGO || "").trim();
 
-                if (wkid) {
-                    console.log(`Archivo ${archivo}: WKID detectado ${wkid}`);
-                } else {
-                    console.log(
-                        `Archivo ${archivo}: sin WKID detectado. Se intentará conversión automática.`
-                    );
-                }
-
-                let convertidos = 0;
-
-                features.forEach((feature, index) => {
-                    const nombreReferencia = `${archivo}-set${setIndex + 1}`;
-
-                    const predio = convertirFeatureAPredio(
-                        feature,
-                        index,
-                        nombreReferencia,
-                        spatialReference
-                    );
-
-                    if (predio) {
-                        prediosCargados.push(predio);
-                        convertidos += 1;
-                    }
-                });
-
-                console.log(
-                    `Archivo ${archivo}, conjunto ${setIndex + 1}: ${convertidos} predios convertidos.`
-                );
-            });
-        } catch (error) {
-            console.error(`Error leyendo el archivo ${archivo}:`, error.message);
+        if (code) {
+            veredaNameByCode.set(code, properties.NOMBRE || "Sin nombre");
         }
     });
 
-    if (prediosCargados.length === 0) {
-        console.warn(
-            "No se pudo convertir ningún predio. Se usarán datos simulados."
-        );
+    barrioLayer?.records.forEach((record) => {
+        const properties = record.feature.properties || {};
+        const sectorCode = String(properties.SECTOR_CODIGO || "").trim();
 
-        return prediosSimuladosGuataqui();
-    }
+        if (sectorCode) {
+            barrioNameBySector.set(
+                sectorCode,
+                properties.NOMBRE || "Sin nombre"
+            );
+        }
+    });
 
-    console.log(`Predios cargados correctamente: ${prediosCargados.length}`);
+    constructionLayer?.records.forEach((record) => {
+        const properties = record.feature.properties || {};
+        const terrainCode = String(properties.TERRENO_CODIGO || "").trim();
 
-    return prediosCargados;
+        if (!terrainCode) return;
+
+        if (!constructionsByTerrainCode.has(terrainCode)) {
+            constructionsByTerrainCode.set(terrainCode, []);
+        }
+
+        constructionsByTerrainCode.get(terrainCode).push(record);
+    });
+
+    ["u-terreno", "r-terreno"].forEach((layerId) => {
+        const layer = layerStore.get(layerId);
+
+        layer?.records.forEach((record) => {
+            const properties = record.feature.properties || {};
+            const code = String(properties.CODIGO || "").trim();
+            const previousCode = String(
+                properties.CODIGO_ANTERIOR || ""
+            ).trim();
+
+            const item = {
+                layerId,
+                record,
+            };
+
+            terrainRecords.push(item);
+
+            if (code) {
+                terrainByCode.set(normalizeText(code), item);
+            }
+
+            if (previousCode) {
+                terrainByPreviousCode.set(normalizeText(previousCode), item);
+            }
+        });
+    });
 }
 
-let predios = cargarPrediosDesdeJson();
+buildIndexes();
 
-function buscarPredioPorCodigo(codigo) {
-    const codigoNormalizado = normalizarTexto(codigo);
+function findBarrioName(properties) {
+    const blockCode = String(properties.MANZANA_CODIGO || "").trim();
 
-    return predios.find(
-        (predio) => normalizarTexto(predio.codigo) === codigoNormalizado
+    if (!blockCode) {
+        return "No aplica";
+    }
+
+    for (const [sectorCode, name] of barrioNameBySector.entries()) {
+        if (blockCode.startsWith(sectorCode)) {
+            return name;
+        }
+    }
+
+    return "Sector urbano sin nombre";
+}
+
+function summarizeConstructions(terrainCode) {
+    const records = constructionsByTerrainCode.get(terrainCode) || [];
+
+    if (!records.length) {
+        return {
+            cantidad: 0,
+            areaConstruidaM2: 0,
+            areaConstruida: "0 m²",
+            maxPisos: 0,
+            maxSotanos: 0,
+            tipos: [],
+            dominios: [],
+        };
+    }
+
+    const types = new Set();
+    const domains = new Set();
+
+    let totalArea = 0;
+    let maxFloors = 0;
+    let maxBasements = 0;
+
+    records.forEach((record) => {
+        const properties = record.feature.properties || {};
+
+        totalArea += toFiniteNumber(properties.SHAPE_Area, 0);
+
+        maxFloors = Math.max(
+            maxFloors,
+            toFiniteNumber(properties.NUMERO_PISOS, 0)
+        );
+
+        maxBasements = Math.max(
+            maxBasements,
+            toFiniteNumber(properties.NUMERO_SOTANOS, 0)
+        );
+
+        if (properties.TIPO_CONSTRUCCION) {
+            types.add(String(properties.TIPO_CONSTRUCCION));
+        }
+
+        if (properties.TIPO_DOMINIO) {
+            domains.add(String(properties.TIPO_DOMINIO));
+        }
+    });
+
+    return {
+        cantidad: records.length,
+        areaConstruidaM2: totalArea,
+        areaConstruida: formatSquareMeters(totalArea),
+        maxPisos: maxFloors,
+        maxSotanos: maxBasements,
+        tipos: Array.from(types).sort(),
+        dominios: Array.from(domains).sort(),
+    };
+}
+
+function ringAreaApproximation(ring) {
+    if (!Array.isArray(ring) || ring.length < 3) return 0;
+
+    let sum = 0;
+
+    for (let index = 0; index < ring.length; index += 1) {
+        const current = ring[index];
+        const next = ring[(index + 1) % ring.length];
+
+        sum += Number(current[0]) * Number(next[1]);
+        sum -= Number(next[0]) * Number(current[1]);
+    }
+
+    return Math.abs(sum / 2);
+}
+
+function getLargestExteriorRing(geometry) {
+    if (!geometry || !Array.isArray(geometry.coordinates)) {
+        return [];
+    }
+
+    let rings = [];
+
+    if (geometry.type === "Polygon") {
+        rings = geometry.coordinates.length
+            ? [geometry.coordinates[0]]
+            : [];
+    } else if (geometry.type === "MultiPolygon") {
+        rings = geometry.coordinates
+            .map((polygon) => polygon?.[0])
+            .filter(Array.isArray);
+    }
+
+    if (!rings.length) {
+        return [];
+    }
+
+    return rings.reduce((largest, ring) =>
+        ringAreaApproximation(ring) > ringAreaApproximation(largest)
+            ? ring
+            : largest
     );
 }
 
-function buscarPrediosPorTexto(texto, limit = 20) {
-    const busqueda = normalizarTexto(texto);
+function geometryToLeafletCoordinates(geometry) {
+    const ring = getLargestExteriorRing(geometry);
 
-    if (!busqueda) return [];
+    if (!ring.length) {
+        return [];
+    }
 
-    const exactos = [];
-    const similares = [];
+    const converted = ring
+        .filter(
+            (coordinate) =>
+                Array.isArray(coordinate) &&
+                Number.isFinite(Number(coordinate[0])) &&
+                Number.isFinite(Number(coordinate[1]))
+        )
+        .map((coordinate) => [
+            Number(coordinate[1]),
+            Number(coordinate[0]),
+        ]);
 
-    predios.forEach((predio) => {
-        const codigo = normalizarTexto(predio.codigo);
-        const direccion = normalizarTexto(predio.direccion);
-        const propietario = normalizarTexto(predio.propietario);
-        const uso = normalizarTexto(predio.uso);
-        const barrio = normalizarTexto(predio.barrio);
+    if (converted.length > 1) {
+        const first = converted[0];
+        const last = converted[converted.length - 1];
 
-        if (codigo === busqueda) {
-            exactos.push(predio);
+        if (first[0] === last[0] && first[1] === last[1]) {
+            converted.pop();
+        }
+    }
+
+    return converted;
+}
+
+function terrainItemToPredio(item) {
+    const { layerId, record } = item;
+    const properties = record.feature.properties || {};
+
+    const urban = layerId === "u-terreno";
+    const code = String(properties.CODIGO || "").trim();
+    const areaM2 = toFiniteNumber(properties.SHAPE_Area, 0);
+    const perimeterM = toFiniteNumber(properties.SHAPE_Length, 0);
+    const veredaCode = String(properties.VEREDA_CODIGO || "").trim();
+    const blockCode = String(properties.MANZANA_CODIGO || "").trim();
+
+    const sectorName = urban
+        ? findBarrioName(properties)
+        : veredaNameByCode.get(veredaCode) || "Vereda sin nombre";
+
+    const constructionSummary = urban
+        ? summarizeConstructions(code)
+        : summarizeConstructions("");
+
+    return {
+        id: record.feature.id,
+        layerId,
+
+        codigo: code || `SIN-CODIGO-${record.feature.id}`,
+
+        codigoAnterior: String(
+            properties.CODIGO_ANTERIOR || "Sin información"
+        ),
+
+        objectId: properties.OBJECTID ?? null,
+
+        zona: urban ? "Urbana" : "Rural",
+
+        propietario: "No disponible en la capa suministrada",
+        direccion: "No disponible en la capa suministrada",
+        matricula: "No disponible en la capa suministrada",
+
+        area: formatSquareMeters(areaM2),
+        areaM2,
+
+        perimetro: formatMeters(perimeterM),
+        perimetroM: perimeterM,
+
+        uso: urban ? "Terreno urbano" : "Terreno rural",
+
+        estado: "Registrado en la capa predial",
+
+        barrio: urban ? sectorName : "No aplica",
+        vereda: urban ? "No aplica" : sectorName,
+        barrioOSector: sectorName,
+
+        manzanaCodigo: blockCode || "No aplica",
+        veredaCodigo: veredaCode || "No aplica",
+
+        numeroSubterraneos: toFiniteNumber(
+            properties.NUMERO_SUBTERRANEOS,
+            0
+        ),
+
+        codigoMunicipio: String(
+            properties.CODIGO_MUNICIPIO || "25324"
+        ),
+
+        fechaActualizacion: formatDate(properties.FECHA_LOG),
+
+        construcciones: constructionSummary,
+
+        observacion:
+            "Información tomada de las capas vectoriales de prueba de Guataquí.",
+
+        coords: geometryToLeafletCoordinates(record.feature.geometry),
+
+        geometry: record.feature.geometry,
+        bbox: record.bbox,
+        center: record.center,
+    };
+}
+
+function findTerrainByCode(value) {
+    const normalized = normalizeText(value);
+
+    return (
+        terrainByCode.get(normalized) ||
+        terrainByPreviousCode.get(normalized) ||
+        null
+    );
+}
+
+function searchTerrains(query, limit = 20) {
+    const normalizedQuery = normalizeText(query);
+
+    if (!normalizedQuery) {
+        return [];
+    }
+
+    const exact = [];
+    const partial = [];
+
+    terrainRecords.forEach((item) => {
+        const predio = terrainItemToPredio(item);
+
+        const searchableValues = [
+            predio.codigo,
+            predio.codigoAnterior,
+            predio.zona,
+            predio.barrioOSector,
+            predio.manzanaCodigo,
+            predio.veredaCodigo,
+            predio.codigoMunicipio,
+        ].map(normalizeText);
+
+        if (
+            searchableValues[0] === normalizedQuery ||
+            searchableValues[1] === normalizedQuery
+        ) {
+            exact.push(predio);
             return;
         }
 
         if (
-            codigo.includes(busqueda) ||
-            direccion.includes(busqueda) ||
-            propietario.includes(busqueda) ||
-            uso.includes(busqueda) ||
-            barrio.includes(busqueda)
+            searchableValues.some((value) =>
+                value.includes(normalizedQuery)
+            )
         ) {
-            similares.push(predio);
+            partial.push(predio);
         }
     });
 
-    return [...exactos, ...similares].slice(0, limit);
+    return [...exact, ...partial].slice(0, limit);
 }
 
-function aplicarFiltroBbox(lista, bbox) {
-    if (!bbox) return lista;
+function getFilteredLayerRecords(layer, bbox, center) {
+    const filtered = bbox
+        ? layer.records.filter((record) =>
+            bboxIntersects(record.bbox, bbox)
+        )
+        : layer.records;
 
-    return lista.filter(
-        (predio) => predio.bbox && bboxIntersecta(predio.bbox, bbox)
-    );
+    return {
+        filtered,
+        ordered: sortRecordsByCenter(filtered, center),
+    };
 }
 
-function aplicarLimite(lista, limit) {
-    if (!limit || limit <= 0) return lista;
-
-    return lista.slice(0, limit);
-}
-
-function nombreArchivoSeguro(texto) {
-    return String(texto || "predio")
+function cleanFileName(value) {
+    return String(value || "predio")
         .replace(/[^a-zA-Z0-9-_]/g, "_")
-        .slice(0, 80);
+        .slice(0, 100);
 }
 
-function dibujarFila(doc, etiqueta, valor, y) {
-    doc.font("Helvetica-Bold").fontSize(10).text(etiqueta, 60, y, {
-        width: 160,
-    });
-
-    doc.font("Helvetica").fontSize(10).text(valor || "---", 220, y, {
-        width: 300,
-    });
-}
-
-/* RUTAS */
-
-app.get("/", (req, res) => {
-    res.json({
-        message: "Backend del geovisor funcionando correctamente",
-        version: "BETA",
-        prediosTotales: predios.length,
-        modoCarga: "bbox",
-        corsPermitidos: FRONTEND_URLS,
-    });
-});
-
-app.get("/api/predios", (req, res) => {
-    const bbox = parseBbox(req.query.bbox);
-
-    const centroMapa =
-        parseCenter(req.query.center) || (bbox ? obtenerCentroBbox(bbox) : null);
-
-    const limit =
-        req.query.limit !== undefined ? Number(req.query.limit) : DEFAULT_LIMIT;
-
-    const filtrados = aplicarFiltroBbox(predios, bbox);
-    const ordenados = ordenarPorCercaniaAlCentro(filtrados, centroMapa);
-    const data = aplicarLimite(ordenados, limit);
-
-    res.json({
-        data,
-        count: data.length,
-        total: filtrados.length,
-        totalGeneral: predios.length,
-        limit: limit > 0 ? limit : null,
-        bbox,
-        center: centroMapa,
-    });
-});
-
-app.get("/api/predios/buscar", (req, res) => {
-    const q = req.query.q || "";
-    const limit = Number(req.query.limit || 20);
-
-    const resultados = buscarPrediosPorTexto(q, limit);
-
-    res.json({
-        data: resultados,
-        count: resultados.length,
-        totalGeneral: predios.length,
-    });
-});
-
-app.get("/api/predios/:codigo", (req, res) => {
-    const predio = buscarPredioPorCodigo(req.params.codigo);
-
-    if (!predio) {
-        return res.status(404).json({
-            message: "Predio no encontrado",
-        });
-    }
-
-    res.json(predio);
-});
-
-app.post("/api/recargar-predios", (req, res) => {
-    predios = cargarPrediosDesdeJson();
-
-    res.json({
-        message: "Predios recargados correctamente",
-        total: predios.length,
-    });
-});
-
-app.post("/api/certificados/:codigo", (req, res) => {
-    const { password } = req.body;
-
-    if (!password || password !== CERTIFICADO_PASSWORD) {
-        return res.status(401).json({
-            message: "Contraseña incorrecta. No se puede generar el certificado.",
-        });
-    }
-
-    const predio = buscarPredioPorCodigo(req.params.codigo);
-
-    if (!predio) {
-        return res.status(404).json({
-            message: "Predio no encontrado",
-        });
-    }
-
-    const fechaGeneracion = new Intl.DateTimeFormat("es-CO", {
-        dateStyle: "long",
-        timeStyle: "short",
-    }).format(new Date());
-
-    const nombreArchivo = nombreArchivoSeguro(predio.codigo);
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-        "Content-Disposition",
-        `attachment; filename=certificado-${nombreArchivo}.pdf`
-    );
-
-    const doc = new PDFDocument({
-        size: "A4",
-        margin: 50,
-    });
-
-    doc.pipe(res);
-
-    doc.font("Helvetica-Bold").fontSize(18).text("CERTIFICADO PREDIAL MUNICIPAL", {
-        align: "center",
-    });
-
-    doc.moveDown(0.5);
-
-    doc.font("Helvetica").fontSize(10).text(
-        "Geovisor Predial Municipal - Versión BETA",
-        {
-            align: "center",
-        }
-    );
-
-    doc.moveDown(1.5);
-
-    doc.rect(50, 105, 495, 65).stroke();
-
+function addPdfField(doc, label, value) {
     doc
         .font("Helvetica-Bold")
-        .fontSize(11)
-        .text("Información del documento", 60, 118);
+        .fontSize(10)
+        .fillColor("#0f172a")
+        .text(`${label}: `, {
+            continued: true,
+        });
 
     doc
         .font("Helvetica")
-        .fontSize(10)
-        .text(`Fecha de generación: ${fechaGeneracion}`, 60, 138)
-        .text("Tipo de documento: Certificado predial informativo", 60, 153);
+        .fillColor("#334155")
+        .text(String(value ?? "Sin información"));
 
-    doc.moveDown(3);
+    doc.moveDown(0.35);
+}
+
+function addPdfSectionTitle(doc, title) {
+    doc.moveDown(0.5);
 
     doc
         .font("Helvetica-Bold")
         .fontSize(13)
-        .text("1. Información general del predio", 50, 200);
+        .fillColor("#0f766e")
+        .text(title);
 
-    let y = 230;
+    doc.moveDown(0.6);
+}
 
-    dibujarFila(doc, "Código predial:", predio.codigo, y);
-    y += 24;
+app.get("/healthz", (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        service: "geovisor-guataqui-backend",
+        layers: layerStore.size,
+        terrains: terrainRecords.length,
+    });
+});
 
-    dibujarFila(doc, "Propietario:", predio.propietario, y);
-    y += 24;
+app.get("/", (req, res) => {
+    res.json({
+        message:
+            "Backend del Geovisor de Guataquí funcionando correctamente",
 
-    dibujarFila(doc, "Dirección:", predio.direccion, y);
-    y += 24;
+        version: "BETA",
 
-    dibujarFila(doc, "Matrícula inmobiliaria:", predio.matricula, y);
-    y += 24;
+        municipality: "Guataquí, Cundinamarca",
 
-    dibujarFila(doc, "Barrio / sector:", predio.barrio, y);
-    y += 24;
+        mapDefaults: MAP_DEFAULTS,
 
-    dibujarFila(doc, "Área:", predio.area, y);
-    y += 24;
+        layers: Array.from(layerStore.values())
+            .map(publicLayerInfo)
+            .sort((a, b) => a.order - b.order),
 
-    dibujarFila(doc, "Uso del suelo:", predio.uso, y);
-    y += 24;
+        terrainCount: terrainRecords.length,
+    });
+});
 
-    dibujarFila(doc, "Estado:", predio.estado, y);
-    y += 36;
+app.get("/api/config", (req, res) => {
+    const layers = Array.from(layerStore.values())
+        .map(publicLayerInfo)
+        .sort((a, b) => a.order - b.order);
 
-    doc.font("Helvetica-Bold").fontSize(13).text("2. Observaciones", 50, y);
+    const municipalityExtent =
+        layerStore.get("r-vereda")?.extent ||
+        unionBBoxes(layers.map((layer) => layer.extent));
 
-    y += 24;
+    res.json({
+        municipality: {
+            name: "Guataquí",
+            department: "Cundinamarca",
+            daneCode: "25324",
+        },
 
-    doc.font("Helvetica").fontSize(10).text(predio.observacion, 60, y, {
-        width: 480,
-        align: "justify",
+        map: {
+            ...MAP_DEFAULTS,
+            extent: municipalityExtent,
+        },
+
+        layers,
+    });
+});
+
+app.get("/api/capas", (req, res) => {
+    const layers = Array.from(layerStore.values())
+        .map(publicLayerInfo)
+        .sort((a, b) => a.order - b.order);
+
+    res.set("Cache-Control", "public, max-age=300");
+
+    res.json({
+        data: layers,
+        count: layers.length,
+    });
+});
+
+app.get("/api/capas/:layerId", (req, res) => {
+    const layer = layerStore.get(req.params.layerId);
+
+    if (!layer) {
+        return res.status(404).json({
+            message: "La capa solicitada no existe.",
+            availableLayers: Array.from(layerStore.keys()),
+        });
+    }
+
+    const bbox = parseBBox(req.query.bbox);
+
+    const center =
+        parseCenter(req.query.center) ||
+        (bbox ? getBBoxCenter(bbox) : null);
+
+    const limit = parseLimit(req.query.limit);
+
+    const { filtered, ordered } = getFilteredLayerRecords(
+        layer,
+        bbox,
+        center
+    );
+
+    const selected =
+        limit > 0 ? ordered.slice(0, limit) : ordered;
+
+    res.set("Cache-Control", "public, max-age=60");
+
+    res.json({
+        type: "FeatureCollection",
+        name: layer.config.name,
+        layer: publicLayerInfo(layer),
+
+        features: selected.map((record) => record.feature),
+
+        count: selected.length,
+        totalInView: filtered.length,
+        totalLayer: layer.records.length,
+
+        truncated: selected.length < filtered.length,
+
+        limit: limit > 0 ? limit : null,
+
+        bbox,
+        center,
+    });
+});
+
+/*
+  Endpoint compatible con el frontend actual.
+
+  Une terrenos urbanos y rurales y devuelve
+  el formato predio.coords.
+*/
+app.get("/api/predios", (req, res) => {
+    const bbox = parseBBox(req.query.bbox);
+
+    const center =
+        parseCenter(req.query.center) ||
+        (bbox ? getBBoxCenter(bbox) : null);
+
+    const limit = parseLimit(req.query.limit);
+
+    const filtered = terrainRecords.filter(
+        (item) =>
+            !bbox || bboxIntersects(item.record.bbox, bbox)
+    );
+
+    const ordered = sortRecordsByCenter(
+        filtered.map((item) => item.record),
+        center
+    );
+
+    const itemByRecord = new Map(
+        filtered.map((item) => [
+            item.record.feature.id,
+            item,
+        ])
+    );
+
+    const selectedRecords =
+        limit > 0 ? ordered.slice(0, limit) : ordered;
+
+    const data = selectedRecords
+        .map((record) =>
+            itemByRecord.get(record.feature.id)
+        )
+        .filter(Boolean)
+        .map(terrainItemToPredio);
+
+    res.json({
+        data,
+
+        count: data.length,
+
+        total: filtered.length,
+
+        totalGeneral: terrainRecords.length,
+
+        limit: limit > 0 ? limit : null,
+
+        truncated: data.length < filtered.length,
+
+        bbox,
+        center,
+    });
+});
+
+app.get("/api/predios/buscar", (req, res) => {
+    const query = String(req.query.q || "").trim();
+
+    const limit = Math.min(
+        Math.max(Number(req.query.limit || 20), 1),
+        100
+    );
+
+    if (!query) {
+        return res.json({
+            data: [],
+            count: 0,
+            totalGeneral: terrainRecords.length,
+        });
+    }
+
+    const results = searchTerrains(query, limit);
+
+    res.json({
+        data: results,
+        count: results.length,
+        totalGeneral: terrainRecords.length,
+    });
+});
+
+app.get("/api/predios/:codigo", (req, res) => {
+    const item = findTerrainByCode(req.params.codigo);
+
+    if (!item) {
+        return res.status(404).json({
+            message: "Predio no encontrado.",
+        });
+    }
+
+    res.json(terrainItemToPredio(item));
+});
+
+app.post("/api/certificados/:codigo", (req, res) => {
+    const { password } = req.body || {};
+
+    if (!password || password !== CERTIFICADO_PASSWORD) {
+        return res.status(401).json({
+            message:
+                "Contraseña incorrecta. No se puede generar el certificado.",
+        });
+    }
+
+    const item = findTerrainByCode(req.params.codigo);
+
+    if (!item) {
+        return res.status(404).json({
+            message: "Predio no encontrado.",
+        });
+    }
+
+    const predio = terrainItemToPredio(item);
+
+    const generatedAt = new Intl.DateTimeFormat(
+        "es-CO",
+        {
+            dateStyle: "long",
+            timeStyle: "short",
+            timeZone: "America/Bogota",
+        }
+    ).format(new Date());
+
+    const fileName = cleanFileName(predio.codigo);
+
+    res.setHeader("Content-Type", "application/pdf");
+
+    res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="certificado-${fileName}.pdf"`
+    );
+
+    const doc = new PDFDocument({
+        size: "A4",
+        margin: 52,
+
+        info: {
+            Title: `Certificado predial ${predio.codigo}`,
+            Author: "Geovisor Predial de Guataquí",
+            Subject: "Certificado predial informativo BETA",
+        },
     });
 
-    y += 70;
+    doc.on("error", (error) => {
+        console.error("Error generando PDF:", error);
 
-    doc.font("Helvetica-Bold").fontSize(13).text("3. Nota de validez", 50, y);
+        if (!res.headersSent) {
+            res.status(500).json({
+                message:
+                    "No fue posible generar el certificado.",
+            });
+        }
+    });
 
-    y += 24;
+    doc.pipe(res);
+
+    doc
+        .roundedRect(52, 45, 491, 72, 10)
+        .fillAndStroke("#f0fdfa", "#0f766e");
+
+    doc
+        .font("Helvetica-Bold")
+        .fontSize(18)
+        .fillColor("#0f766e")
+        .text(
+            "CERTIFICADO PREDIAL INFORMATIVO",
+            70,
+            64,
+            {
+                width: 455,
+                align: "center",
+            }
+        );
 
     doc
         .font("Helvetica")
         .fontSize(10)
+        .fillColor("#475569")
         .text(
-            "Este documento corresponde a una versión BETA del sistema y se genera con fines demostrativos, académicos y de validación funcional. La información aquí presentada debe ser contrastada con las fuentes oficiales del municipio antes de usarse en trámites administrativos o jurídicos.",
-            60,
-            y,
+            "Geovisor Predial de Guataquí · Versión BETA",
+            70,
+            91,
             {
-                width: 480,
-                align: "justify",
+                width: 455,
+                align: "center",
             }
         );
 
-    doc.moveDown(6);
+    doc.y = 140;
+
+    addPdfField(
+        doc,
+        "Fecha de generación",
+        generatedAt
+    );
+
+    addPdfField(
+        doc,
+        "Municipio",
+        "Guataquí, Cundinamarca"
+    );
+
+    addPdfField(
+        doc,
+        "Código DANE",
+        predio.codigoMunicipio
+    );
+
+    addPdfSectionTitle(
+        doc,
+        "1. Identificación del terreno"
+    );
+
+    addPdfField(
+        doc,
+        "Código predial",
+        predio.codigo
+    );
+
+    addPdfField(
+        doc,
+        "Código anterior",
+        predio.codigoAnterior
+    );
+
+    addPdfField(
+        doc,
+        "Zona",
+        predio.zona
+    );
+
+    addPdfField(
+        doc,
+        "Área catastral",
+        predio.area
+    );
+
+    addPdfField(
+        doc,
+        "Perímetro",
+        predio.perimetro
+    );
+
+    addPdfField(
+        doc,
+        "Número de subterráneos",
+        predio.numeroSubterraneos
+    );
+
+    if (predio.zona === "Urbana") {
+        addPdfField(
+            doc,
+            "Código de manzana",
+            predio.manzanaCodigo
+        );
+
+        addPdfField(
+            doc,
+            "Barrio o sector",
+            predio.barrio
+        );
+    } else {
+        addPdfField(
+            doc,
+            "Código de vereda",
+            predio.veredaCodigo
+        );
+
+        addPdfField(
+            doc,
+            "Vereda",
+            predio.vereda
+        );
+    }
+
+    addPdfField(
+        doc,
+        "Última fecha registrada",
+        predio.fechaActualizacion
+    );
+
+    if (predio.zona === "Urbana") {
+        addPdfSectionTitle(
+            doc,
+            "2. Construcciones relacionadas"
+        );
+
+        addPdfField(
+            doc,
+            "Cantidad de construcciones",
+            predio.construcciones.cantidad
+        );
+
+        addPdfField(
+            doc,
+            "Área construida acumulada",
+            predio.construcciones.areaConstruida
+        );
+
+        addPdfField(
+            doc,
+            "Número máximo de pisos",
+            predio.construcciones.maxPisos
+        );
+
+        addPdfField(
+            doc,
+            "Número máximo de sótanos",
+            predio.construcciones.maxSotanos
+        );
+
+        addPdfField(
+            doc,
+            "Tipos de construcción",
+            predio.construcciones.tipos.join(", ") ||
+            "Sin construcciones registradas"
+        );
+
+        addPdfField(
+            doc,
+            "Tipos de dominio",
+            predio.construcciones.dominios.join(", ") ||
+            "Sin información"
+        );
+    }
+
+    addPdfSectionTitle(
+        doc,
+        predio.zona === "Urbana"
+            ? "3. Nota de alcance"
+            : "2. Nota de alcance"
+    );
 
     doc
         .font("Helvetica")
+        .fontSize(10)
+        .fillColor("#334155")
+        .text(
+            "Este documento se genera a partir de capas vectoriales suministradas para pruebas del prototipo. Tiene carácter informativo y académico. No reemplaza certificados, actos administrativos ni documentos oficiales expedidos por las autoridades competentes.",
+            {
+                align: "justify",
+                lineGap: 3,
+            }
+        );
+
+    doc.moveDown(2);
+
+    doc
+        .font("Helvetica-Oblique")
         .fontSize(9)
-        .text("Generado automáticamente por el Geovisor Predial Municipal.", {
-            align: "center",
-        });
+        .fillColor("#64748b")
+        .text(
+            "Generado automáticamente por el Geovisor Predial de Guataquí.",
+            {
+                align: "center",
+            }
+        );
 
     doc.end();
 });
 
+app.use((req, res) => {
+    res.status(404).json({
+        message: "Ruta no encontrada.",
+    });
+});
+
+app.use((error, req, res, next) => {
+    console.error(error);
+
+    if (
+        error.message?.startsWith("CORS bloqueado")
+    ) {
+        return res.status(403).json({
+            message: error.message,
+        });
+    }
+
+    if (res.headersSent) {
+        return next(error);
+    }
+
+    return res.status(500).json({
+        message: "Error interno del servidor.",
+    });
+});
+
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Servidor corriendo en el puerto ${PORT}`);
-    console.log(`Carpeta de datos: ${DATA_DIR}`);
-    console.log(`Predios en memoria: ${predios.length}`);
-    console.log(`Límite por vista: ${DEFAULT_LIMIT}`);
-    console.log(`Frontends permitidos: ${FRONTEND_URLS.join(", ")}`);
+    console.log(
+        `Servidor del geovisor ejecutándose en el puerto ${PORT}`
+    );
+
+    console.log(
+        "Municipio: Guataquí, Cundinamarca"
+    );
+
+    console.log(
+        `Carpeta de capas: ${DATA_DIR}`
+    );
+
+    console.log(
+        `Capas disponibles: ${layerStore.size}`
+    );
+
+    console.log(
+        `Terrenos consultables: ${terrainRecords.length}`
+    );
+
+    console.log(
+        `Límite por petición: ${DEFAULT_LAYER_LIMIT}`
+    );
+
+    console.log(
+        `Frontends permitidos: ${FRONTEND_URLS.join(", ")}`
+    );
 });

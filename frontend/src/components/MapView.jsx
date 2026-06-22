@@ -1,5 +1,6 @@
 import {
     CircleMarker,
+    GeoJSON,
     MapContainer,
     Polygon,
     Polyline,
@@ -9,10 +10,67 @@ import {
     useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-const INITIAL_CENTER = [4.8617, -74.0589];
-const INITIAL_ZOOM = 15;
+function PanelIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16v14H4z" />
+            <path d="M9 5v14" />
+            <path d="M6.5 9h0M6.5 13h0" />
+        </svg>
+    );
+}
+
+function AreaIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 5 19 7 17 19 6 17z" />
+            <circle cx="5" cy="5" r="1.5" />
+            <circle cx="19" cy="7" r="1.5" />
+            <circle cx="17" cy="19" r="1.5" />
+            <circle cx="6" cy="17" r="1.5" />
+        </svg>
+    );
+}
+
+function DistanceIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 17 17 5" />
+            <path d="m5 12 0 5 5 0M12 5h5v5" />
+            <circle cx="5" cy="17" r="1.5" />
+            <circle cx="17" cy="5" r="1.5" />
+        </svg>
+    );
+}
+
+function HomeIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m3 11 9-8 9 8" />
+            <path d="M5 10v10h14V10" />
+            <path d="M9 20v-6h6v6" />
+        </svg>
+    );
+}
+
+function LegendIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h4v4H4zM4 15h4v4H4z" />
+            <path d="M11 7h9M11 17h9" />
+        </svg>
+    );
+}
+
+function CloseIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
+    );
+}
 
 function formatDistance(meters) {
     if (meters >= 1000) {
@@ -33,9 +91,9 @@ function formatArea(squareMeters) {
 function calculateDistance(points) {
     let total = 0;
 
-    for (let i = 1; i < points.length; i += 1) {
-        const previous = L.latLng(points[i - 1][0], points[i - 1][1]);
-        const current = L.latLng(points[i][0], points[i][1]);
+    for (let index = 1; index < points.length; index += 1) {
+        const previous = L.latLng(points[index - 1][0], points[index - 1][1]);
+        const current = L.latLng(points[index][0], points[index][1]);
 
         total += previous.distanceTo(current);
     }
@@ -47,7 +105,6 @@ function calculatePolygonArea(points) {
     if (points.length < 3) return 0;
 
     const earthRadius = 6378137;
-
     const radians = points.map(([lat, lng]) => [
         (lat * Math.PI) / 180,
         (lng * Math.PI) / 180,
@@ -55,9 +112,9 @@ function calculatePolygonArea(points) {
 
     let area = 0;
 
-    for (let i = 0; i < radians.length; i += 1) {
-        const [lat1, lng1] = radians[i];
-        const [lat2, lng2] = radians[(i + 1) % radians.length];
+    for (let index = 0; index < radians.length; index += 1) {
+        const [lat1, lng1] = radians[index];
+        const [lat2, lng2] = radians[(index + 1) % radians.length];
 
         area += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2));
     }
@@ -65,49 +122,181 @@ function calculatePolygonArea(points) {
     return Math.abs((area * earthRadius * earthRadius) / 2);
 }
 
-function getUsoStyle(uso) {
-    const texto = String(uso || "").toLowerCase();
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
 
-    if (texto.includes("comercial")) {
+function formatPopupValue(key, value) {
+    if (value === null || value === undefined || value === "") {
+        return "Sin información";
+    }
+
+    if (typeof value === "number") {
+        if (String(key).toLowerCase().includes("area")) {
+            return `${new Intl.NumberFormat("es-CO", {
+                maximumFractionDigits: 2,
+            }).format(value)} m²`;
+        }
+
+        if (String(key).toLowerCase().includes("length")) {
+            return `${new Intl.NumberFormat("es-CO", {
+                maximumFractionDigits: 2,
+            }).format(value)} m`;
+        }
+
+        return new Intl.NumberFormat("es-CO", {
+            maximumFractionDigits: 2,
+        }).format(value);
+    }
+
+    if (typeof value === "object") {
+        return JSON.stringify(value);
+    }
+
+    return String(value);
+}
+
+const FIELD_LABELS = {
+    CODIGO: "Código",
+    CODIGO_ANTERIOR: "Código anterior",
+    CODIGO_MUNICIPIO: "Código municipal",
+    MANZANA_CODIGO: "Código de manzana",
+    VEREDA_CODIGO: "Código de vereda",
+    SECTOR_CODIGO: "Código de sector",
+    NOMBRE: "Nombre",
+    TERRENO_CODIGO: "Código del terreno",
+    TIPO_CONSTRUCCION: "Tipo de construcción",
+    TIPO_DOMINIO: "Tipo de dominio",
+    NUMERO_PISOS: "Número de pisos",
+    NUMERO_SOTANOS: "Número de sótanos",
+    NUMERO_SUBTERRANEOS: "Número de subterráneos",
+    SHAPE_Area: "Área",
+    SHAPE_Length: "Perímetro",
+    OBJECTID: "Identificador",
+};
+
+const PREFERRED_FIELDS = {
+    "u-terreno": [
+        "CODIGO",
+        "CODIGO_ANTERIOR",
+        "MANZANA_CODIGO",
+        "NUMERO_SUBTERRANEOS",
+        "SHAPE_Area",
+        "SHAPE_Length",
+    ],
+    "r-terreno": [
+        "CODIGO",
+        "CODIGO_ANTERIOR",
+        "VEREDA_CODIGO",
+        "NUMERO_SUBTERRANEOS",
+        "SHAPE_Area",
+        "SHAPE_Length",
+    ],
+    "u-construccion": [
+        "TERRENO_CODIGO",
+        "TIPO_CONSTRUCCION",
+        "TIPO_DOMINIO",
+        "NUMERO_PISOS",
+        "NUMERO_SOTANOS",
+        "SHAPE_Area",
+    ],
+    "r-vereda": ["CODIGO", "NOMBRE", "SHAPE_Area", "SHAPE_Length"],
+    "u-barrio": ["SECTOR_CODIGO", "NOMBRE", "SHAPE_Area", "SHAPE_Length"],
+    vias: ["NOMBRE", "TIPO", "CLASE", "OBJECTID", "SHAPE_Length"],
+};
+
+function buildPopupHtml(feature, layerInfo) {
+    const properties = feature?.properties || {};
+    const preferred = PREFERRED_FIELDS[layerInfo.id] || [];
+
+    let entries = preferred
+        .filter((key) => properties[key] !== undefined && properties[key] !== null)
+        .map((key) => [key, properties[key]]);
+
+    if (!entries.length) {
+        entries = Object.entries(properties)
+            .filter(([key]) => !key.startsWith("_"))
+            .slice(0, 7);
+    }
+
+    const rows = entries
+        .map(([key, value]) => {
+            const label = FIELD_LABELS[key] || key.replaceAll("_", " ");
+
+            return `
+        <div class="geo-popup-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(formatPopupValue(key, value))}</strong>
+        </div>
+      `;
+        })
+        .join("");
+
+    return `
+    <div class="geo-popup">
+      <div class="geo-popup-layer">${escapeHtml(layerInfo.name)}</div>
+      ${rows || '<p class="geo-popup-empty">Sin atributos disponibles.</p>'}
+    </div>
+  `;
+}
+
+function getFeatureStyle(layerInfo, feature, selectedPredio) {
+    const base = layerInfo.style || {};
+    const properties = feature?.properties || {};
+    const isTerrain = ["u-terreno", "r-terreno"].includes(layerInfo.id);
+    const selected =
+        isTerrain &&
+        selectedPredio?.codigo &&
+        String(properties.CODIGO) === String(selectedPredio.codigo);
+
+    if (selected) {
         return {
-            color: "#2563eb",
-            fillColor: "#60a5fa",
+            color: "#f97316",
+            fillColor: "#fb923c",
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.55,
         };
     }
 
-    if (texto.includes("institucional") || texto.includes("equipamiento")) {
+    if (layerInfo.geometryKind === "line") {
         return {
-            color: "#7c3aed",
-            fillColor: "#a78bfa",
-        };
-    }
-
-    if (texto.includes("rural") || texto.includes("agro")) {
-        return {
-            color: "#16a34a",
-            fillColor: "#86efac",
-        };
-    }
-
-    if (texto.includes("lote") || texto.includes("expansion")) {
-        return {
-            color: "#ca8a04",
-            fillColor: "#fde047",
+            color: base.color || "#475569",
+            weight: base.weight ?? 2,
+            opacity: base.opacity ?? 0.85,
         };
     }
 
     return {
-        color: "#0f766e",
-        fillColor: "#14b8a6",
+        color: base.color || "#0f766e",
+        fillColor: base.fillColor || base.color || "#14b8a6",
+        weight: base.weight ?? 1.4,
+        opacity: base.opacity ?? 1,
+        fillOpacity: base.fillOpacity ?? 0.2,
     };
 }
 
-function MapController({
-    selectedPredio,
-    resetCounter,
-    sidebarCollapsed,
-}) {
+function MapController({ mapConfig, selectedPredio, resetCounter, sidebarCollapsed }) {
     const map = useMap();
+    const lastConfigRef = useRef("");
+
+    const centerLat = Number(mapConfig?.center?.[0] ?? 4.517973);
+    const centerLng = Number(mapConfig?.center?.[1] ?? -74.789503);
+    const zoom = Number(mapConfig?.zoom ?? 16);
+
+    useEffect(() => {
+        const configKey = `${centerLat},${centerLng},${zoom}`;
+
+        if (lastConfigRef.current !== configKey) {
+            lastConfigRef.current = configKey;
+            map.setView([centerLat, centerLng], zoom);
+        }
+    }, [centerLat, centerLng, zoom, map]);
 
     useEffect(() => {
         if (!selectedPredio?.coords?.length) return;
@@ -115,19 +304,19 @@ function MapController({
         const bounds = L.latLngBounds(selectedPredio.coords);
 
         map.fitBounds(bounds, {
-            padding: [50, 50],
-            maxZoom: 18,
+            padding: [55, 55],
+            maxZoom: 19,
         });
     }, [selectedPredio, map]);
 
     useEffect(() => {
-        map.setView(INITIAL_CENTER, INITIAL_ZOOM);
-    }, [resetCounter, map]);
+        map.setView([centerLat, centerLng], zoom);
+    }, [resetCounter, centerLat, centerLng, zoom, map]);
 
     useEffect(() => {
         const timeout = setTimeout(() => {
             map.invalidateSize();
-        }, 250);
+        }, 260);
 
         return () => clearTimeout(timeout);
     }, [sidebarCollapsed, map]);
@@ -138,7 +327,7 @@ function MapController({
 function BoundsWatcher({ onBoundsChange }) {
     const map = useMap();
 
-    function emitirBounds() {
+    function emitBounds() {
         const bounds = map.getBounds();
         const southWest = bounds.getSouthWest();
         const northEast = bounds.getNorthEast();
@@ -155,32 +344,24 @@ function BoundsWatcher({ onBoundsChange }) {
     }
 
     useEffect(() => {
-        const timeout = setTimeout(() => {
-            emitirBounds();
-        }, 200);
-
+        const timeout = setTimeout(emitBounds, 180);
         return () => clearTimeout(timeout);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [map]);
 
     useMapEvents({
-        moveend() {
-            emitirBounds();
-        },
-
-        zoomend() {
-            emitirBounds();
-        },
+        moveend: emitBounds,
+        zoomend: emitBounds,
     });
 
     return null;
 }
 
-function MapClickEvents({ activeTool, onMeasurementClick }) {
+function MeasurementEvents({ activeTool, onMeasurementPoint }) {
     useMapEvents({
         click(event) {
-            if (activeTool === "distancia" || activeTool === "area") {
-                onMeasurementClick(event.latlng);
+            if (activeTool === "area" || activeTool === "distancia") {
+                onMeasurementPoint(event.latlng);
             }
         },
     });
@@ -188,137 +369,179 @@ function MapClickEvents({ activeTool, onMeasurementClick }) {
     return null;
 }
 
-function MapView({
-    predios,
+function LayerGeoJson({
+    layerInfo,
+    payload,
     selectedPredio,
-    onSelectPredio,
-    prediosVisible,
+    activeTool,
+    onTerrainClick,
+}) {
+    if (!payload?.features?.length) return null;
+
+    const data = {
+        type: "FeatureCollection",
+        features: payload.features,
+    };
+
+    function onEachFeature(feature, leafletLayer) {
+        leafletLayer.bindPopup(buildPopupHtml(feature, layerInfo), {
+            maxWidth: 320,
+            className: "geo-popup-wrapper",
+        });
+
+        if (["r-vereda", "u-barrio"].includes(layerInfo.id)) {
+            const label = feature.properties?.NOMBRE;
+
+            if (label) {
+                leafletLayer.bindTooltip(String(label), {
+                    sticky: true,
+                    direction: "top",
+                    className: "geo-label-tooltip",
+                });
+            }
+        }
+
+        if (["u-terreno", "r-terreno"].includes(layerInfo.id)) {
+            leafletLayer.on("click", () => {
+                if (activeTool !== "navegar") return;
+
+                const code = feature.properties?.CODIGO;
+
+                if (code) {
+                    onTerrainClick(code);
+                }
+            });
+        }
+    }
+
+    return (
+        <GeoJSON
+            key={`${layerInfo.id}-${payload.loadedAt}-${selectedPredio?.codigo || ""}-${activeTool}`}
+            data={data}
+            style={(feature) => getFeatureStyle(layerInfo, feature, selectedPredio)}
+            onEachFeature={onEachFeature}
+        />
+    );
+}
+
+function LegendSwatch({ layer }) {
+    const style = layer.style || {};
+
+    if (layer.geometryKind === "line") {
+        return (
+            <span
+                className="map-legend-swatch line"
+                style={{ backgroundColor: style.color || "#475569" }}
+            />
+        );
+    }
+
+    return (
+        <span
+            className="map-legend-swatch polygon"
+            style={{
+                backgroundColor: style.fillColor || style.color || "#14b8a6",
+                borderColor: style.color || "#0f766e",
+            }}
+        />
+    );
+}
+
+function MapView({
+    mapConfig,
+    layers,
+    activeLayerIds,
+    selectedPredio,
+    onTerrainClick,
+    activeTool,
+    onToolChange,
+    onResetView,
+    resetCounter,
+    onBoundsChange,
+    onStatusChange,
+    status,
     legendVisible,
     onToggleLegend,
-    activeTool,
-    resetCounter,
-    status,
-    onStatusChange,
-    onBoundsChange,
-    loadingPredios,
-    prediosMeta,
     sidebarCollapsed,
+    onOpenSidebar,
+    loadingLayerIds,
 }) {
     const [measurementPoints, setMeasurementPoints] = useState([]);
     const [measurementResult, setMeasurementResult] = useState("");
-
-    const selectedCode = selectedPredio?.codigo;
 
     useEffect(() => {
         setMeasurementPoints([]);
         setMeasurementResult("");
     }, [activeTool, resetCounter]);
 
-    /*
-      Mantiene visible el predio encontrado mediante búsqueda,
-      aunque no forme parte de la última carga por BBOX.
-    */
-    const prediosParaMapa = useMemo(() => {
-        const map = new Map();
-
-        if (selectedPredio) {
-            map.set(String(selectedPredio.id), selectedPredio);
-        }
-
-        predios.forEach((predio) => {
-            map.set(String(predio.id), predio);
-        });
-
-        return Array.from(map.values());
-    }, [predios, selectedPredio]);
-
-    function getPredioStyle(predio) {
-        const isSelected = predio.codigo === selectedCode;
-
-        if (isSelected) {
-            return {
-                color: "#f97316",
-                weight: 3,
-                fillColor: "#fb923c",
-                fillOpacity: 0.48,
-            };
-        }
-
-        const usoStyle = getUsoStyle(predio.uso);
-
-        return {
-            color: usoStyle.color,
-            weight: 1.4,
-            fillColor: usoStyle.fillColor,
-            fillOpacity: 0.28,
-        };
-    }
-
-    function handleMeasurementClick(latlng) {
-        const newPoint = [latlng.lat, latlng.lng];
-
-        setMeasurementPoints((previousPoints) => {
-            const nextPoints = [...previousPoints, newPoint];
-
-            if (activeTool === "distancia") {
-                if (nextPoints.length >= 2) {
-                    const distance = calculateDistance(nextPoints);
-                    const result = `Distancia total: ${formatDistance(distance)}`;
-
-                    setMeasurementResult(result);
-                    onStatusChange(result);
-                } else {
-                    setMeasurementResult("Selecciona al menos dos puntos.");
-
-                    onStatusChange(
-                        "Selecciona al menos dos puntos para medir distancia."
-                    );
-                }
-            }
-
-            if (activeTool === "area") {
-                if (nextPoints.length >= 3) {
-                    const area = calculatePolygonArea(nextPoints);
-                    const result = `Área aproximada: ${formatArea(area)}`;
-
-                    setMeasurementResult(result);
-                    onStatusChange(result);
-                } else {
-                    setMeasurementResult("Selecciona al menos tres puntos.");
-
-                    onStatusChange(
-                        "Selecciona al menos tres puntos para medir área."
-                    );
-                }
-            }
-
-            return nextPoints;
-        });
-    }
-
     const measurementLine = useMemo(() => {
-        if (activeTool !== "distancia") return null;
-        if (measurementPoints.length < 2) return null;
+        if (activeTool !== "distancia" || measurementPoints.length < 2) {
+            return null;
+        }
 
         return measurementPoints;
     }, [activeTool, measurementPoints]);
 
     const measurementPolygon = useMemo(() => {
-        if (activeTool !== "area") return null;
-        if (measurementPoints.length < 3) return null;
+        if (activeTool !== "area" || measurementPoints.length < 3) {
+            return null;
+        }
 
         return measurementPoints;
     }, [activeTool, measurementPoints]);
 
+    const totalVisibleElements = useMemo(() => {
+        return layers.reduce((total, layer) => {
+            return total + Number(layer.payload?.count || 0);
+        }, 0);
+    }, [layers]);
+
+    function handleMeasurementPoint(latlng) {
+        const nextPoint = [latlng.lat, latlng.lng];
+
+        setMeasurementPoints((previous) => {
+            const next = [...previous, nextPoint];
+
+            if (activeTool === "distancia") {
+                if (next.length >= 2) {
+                    const result = `Distancia total: ${formatDistance(
+                        calculateDistance(next)
+                    )}`;
+
+                    setMeasurementResult(result);
+                    onStatusChange(result);
+                } else {
+                    setMeasurementResult("Selecciona al menos dos puntos.");
+                }
+            }
+
+            if (activeTool === "area") {
+                if (next.length >= 3) {
+                    const result = `Área aproximada: ${formatArea(
+                        calculatePolygonArea(next)
+                    )}`;
+
+                    setMeasurementResult(result);
+                    onStatusChange(result);
+                } else {
+                    setMeasurementResult("Selecciona al menos tres puntos.");
+                }
+            }
+
+            return next;
+        });
+    }
+
     return (
-        <div className="map-wrapper">
+        <div className={`map-wrapper ${activeTool !== "navegar" ? "measuring" : ""}`}>
             <MapContainer
-                center={INITIAL_CENTER}
-                zoom={INITIAL_ZOOM}
+                center={mapConfig.center}
+                zoom={mapConfig.zoom}
                 className="leaflet-map"
                 preferCanvas
             >
                 <MapController
+                    mapConfig={mapConfig}
                     selectedPredio={selectedPredio}
                     resetCounter={resetCounter}
                     sidebarCollapsed={sidebarCollapsed}
@@ -326,9 +549,9 @@ function MapView({
 
                 <BoundsWatcher onBoundsChange={onBoundsChange} />
 
-                <MapClickEvents
+                <MeasurementEvents
                     activeTool={activeTool}
-                    onMeasurementClick={handleMeasurementClick}
+                    onMeasurementPoint={handleMeasurementPoint}
                 />
 
                 <TileLayer
@@ -336,52 +559,16 @@ function MapView({
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
 
-                {prediosVisible &&
-                    prediosParaMapa.map((predio) => (
-                        <Polygon
-                            key={predio.id}
-                            positions={predio.coords}
-                            pathOptions={getPredioStyle(predio)}
-                            eventHandlers={{
-                                click: () => {
-                                    if (activeTool === "identificar") {
-                                        onSelectPredio(predio);
-                                    }
-                                },
-                            }}
-                        >
-                            <Popup>
-                                <div className="popup-content">
-                                    <h3>{predio.codigo}</h3>
-
-                                    <p>
-                                        <strong>Propietario:</strong>{" "}
-                                        {predio.propietario || "Sin información"}
-                                    </p>
-
-                                    <p>
-                                        <strong>Dirección:</strong>{" "}
-                                        {predio.direccion || "Sin información"}
-                                    </p>
-
-                                    <p>
-                                        <strong>Área:</strong>{" "}
-                                        {predio.area || "Sin información"}
-                                    </p>
-
-                                    <p>
-                                        <strong>Uso:</strong>{" "}
-                                        {predio.uso || "Sin información"}
-                                    </p>
-
-                                    <p>
-                                        <strong>Estado:</strong>{" "}
-                                        {predio.estado || "Sin información"}
-                                    </p>
-                                </div>
-                            </Popup>
-                        </Polygon>
-                    ))}
+                {layers.map(({ info, payload }) => (
+                    <LayerGeoJson
+                        key={info.id}
+                        layerInfo={info}
+                        payload={payload}
+                        selectedPredio={selectedPredio}
+                        activeTool={activeTool}
+                        onTerrainClick={onTerrainClick}
+                    />
+                ))}
 
                 {measurementLine && (
                     <Polyline
@@ -389,6 +576,7 @@ function MapView({
                         pathOptions={{
                             color: "#2563eb",
                             weight: 4,
+                            opacity: 0.95,
                         }}
                     />
                 )}
@@ -422,96 +610,146 @@ function MapView({
                 ))}
             </MapContainer>
 
-            {loadingPredios && (
-                <div className="loading-layer">
-                    <div className="loading-content">
-                        <div className="loader"></div>
-                        <p>Cargando predios de la zona visible...</p>
-                    </div>
-                </div>
+            {sidebarCollapsed && (
+                <button
+                    type="button"
+                    className="map-panel-open-button"
+                    onClick={onOpenSidebar}
+                    title="Abrir panel lateral"
+                    aria-label="Abrir panel lateral"
+                >
+                    <PanelIcon />
+                </button>
             )}
 
-            <div className="map-tool-indicator">
-                <strong>Herramienta:</strong>{" "}
+            <div className="floating-map-tools" aria-label="Herramientas del mapa">
+                <button
+                    type="button"
+                    className={activeTool === "area" ? "active" : ""}
+                    onClick={() => onToolChange("area")}
+                    title="Medir área"
+                    aria-label="Medir área"
+                    aria-pressed={activeTool === "area"}
+                >
+                    <AreaIcon />
+                </button>
 
-                {activeTool === "identificar" && "Identificar predio"}
-                {activeTool === "distancia" && "Medición de distancia"}
-                {activeTool === "area" && "Medición de área"}
+                <button
+                    type="button"
+                    className={activeTool === "distancia" ? "active" : ""}
+                    onClick={() => onToolChange("distancia")}
+                    title="Medir distancia"
+                    aria-label="Medir distancia"
+                    aria-pressed={activeTool === "distancia"}
+                >
+                    <DistanceIcon />
+                </button>
+
+                <span className="floating-tools-divider" />
+
+                <button
+                    type="button"
+                    onClick={onResetView}
+                    title="Volver a la vista inicial"
+                    aria-label="Vista inicial"
+                >
+                    <HomeIcon />
+                </button>
             </div>
 
-            <div className="map-floating-panel">
-                <strong>Predios visibles:</strong>
-                <span>{prediosVisible ? prediosMeta.count : 0}</span>
-
-                {prediosMeta.total > prediosMeta.count && (
-                    <small>Mostrando una parte de la vista actual</small>
-                )}
+            <div className="active-layers-pill">
+                <LayersIconForPill />
+                <span>{activeLayerIds.length} capas</span>
+                <strong>{new Intl.NumberFormat("es-CO").format(totalVisibleElements)}</strong>
             </div>
+
+            {loadingLayerIds.length > 0 && (
+                <div className="map-loading-indicator">
+                    <span className="small-spinner" />
+                    <span>
+                        Cargando {loadingLayerIds.length} capa
+                        {loadingLayerIds.length === 1 ? "" : "s"}
+                    </span>
+                </div>
+            )}
 
             {!legendVisible && (
                 <button
                     type="button"
-                    className="mobile-legend-toggle"
+                    className="map-legend-toggle"
                     onClick={onToggleLegend}
-                    aria-label="Mostrar leyenda"
-                    aria-expanded="false"
+                    aria-label="Abrir leyenda"
                 >
-                    <span aria-hidden="true">▤</span>
-                    Leyenda
+                    <LegendIcon />
+                    <span>Leyenda</span>
                 </button>
             )}
 
             {legendVisible && (
-                <div className="map-legend">
+                <div className="map-legend-panel">
                     <div className="map-legend-header">
-                        <h3>Leyenda</h3>
+                        <div>
+                            <span>Mapa</span>
+                            <h3>Leyenda</h3>
+                        </div>
 
                         <button
                             type="button"
-                            className="legend-close-button"
                             onClick={onToggleLegend}
                             aria-label="Cerrar leyenda"
+                            title="Cerrar leyenda"
                         >
-                            ×
+                            <CloseIcon />
                         </button>
                     </div>
 
-                    <div className="legend-item">
-                        <span className="legend-color residencial"></span>
-                        <p>Residencial / general</p>
-                    </div>
+                    <div className="map-legend-list">
+                        {layers.length === 0 ? (
+                            <p className="map-legend-empty">No hay capas activas.</p>
+                        ) : (
+                            layers.map(({ info }) => (
+                                <div className="map-legend-item" key={info.id}>
+                                    <LegendSwatch layer={info} />
+                                    <span>{info.name}</span>
+                                </div>
+                            ))
+                        )}
 
-                    <div className="legend-item">
-                        <span className="legend-color comercial"></span>
-                        <p>Comercial</p>
-                    </div>
+                        {selectedPredio && (
+                            <div className="map-legend-item special">
+                                <span className="map-legend-swatch polygon selected" />
+                                <span>Predio seleccionado</span>
+                            </div>
+                        )}
 
-                    <div className="legend-item">
-                        <span className="legend-color institucional"></span>
-                        <p>Institucional</p>
-                    </div>
-
-                    <div className="legend-item">
-                        <span className="legend-color seleccionado"></span>
-                        <p>Predio seleccionado</p>
-                    </div>
-
-                    <div className="legend-item">
-                        <span className="legend-color medicion"></span>
-                        <p>Medición</p>
+                        {(activeTool === "area" || activeTool === "distancia") && (
+                            <div className="map-legend-item special">
+                                <span className="map-legend-swatch line measurement" />
+                                <span>Medición activa</span>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
 
             {measurementResult && (
-                <div className="measurement-panel">
-                    <strong>Resultado:</strong>
-                    <span>{measurementResult}</span>
+                <div className="measurement-result-panel">
+                    <span>Resultado</span>
+                    <strong>{measurementResult}</strong>
                 </div>
             )}
 
-            <div className="map-status">{status}</div>
+            <div className="map-status-message">{status}</div>
         </div>
+    );
+}
+
+function LayersIconForPill() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 9 5-9 5-9-5z" />
+            <path d="m3 12 9 5 9-5" />
+        </svg>
     );
 }
 

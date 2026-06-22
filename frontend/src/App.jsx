@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import MapView from "./components/MapView";
@@ -9,18 +9,21 @@ const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:3001"
 ).replace(/\/$/, "");
 
-// Puedes aumentar o reducir este valor según el rendimiento.
-const LIMIT_PREDIOS_POR_VISTA = 3000;
+const FALLBACK_MAP = {
+  center: [4.517973, -74.789503],
+  zoom: 16,
+};
 
-function normalizarTexto(texto) {
-  return String(texto || "")
-    .trim()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toUpperCase();
+const ELEMENTOS_POR_CAPA = 6000;
+
+function isMobileViewport() {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia("(max-width: 768px)").matches
+  );
 }
 
-function crearBboxKey(bounds) {
+function boundsKey(bounds) {
   if (!bounds) return "";
 
   return [
@@ -31,98 +34,193 @@ function crearBboxKey(bounds) {
     bounds.centerLng,
     bounds.centerLat,
   ]
-    .filter((value) => Number.isFinite(Number(value)))
     .map((value) => Number(value).toFixed(5))
     .join(",");
 }
 
+function sanitizeDownloadName(value) {
+  return String(value || "predio")
+    .replace(/[^a-zA-Z0-9-_]/g, "_")
+    .slice(0, 100);
+}
+
 function App() {
-  const [predios, setPredios] = useState([]);
+  const [mapConfig, setMapConfig] = useState(FALLBACK_MAP);
+  const [layerCatalog, setLayerCatalog] = useState([]);
+  const [activeLayerIds, setActiveLayerIds] = useState([]);
+  const [layerData, setLayerData] = useState({});
+  const [loadingLayerIds, setLoadingLayerIds] = useState([]);
+  const [layerErrors, setLayerErrors] = useState({});
+
+  const [currentBounds, setCurrentBounds] = useState(null);
   const [selectedPredio, setSelectedPredio] = useState(null);
+
   const [searchTerm, setSearchTerm] = useState("");
-  const [prediosVisible, setPrediosVisible] = useState(true);
+  const [searchResults, setSearchResults] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
-  /*
-    En escritorio la leyenda inicia abierta.
-    En celular inicia cerrada para no tapar el mapa.
-  */
-  const [legendVisible, setLegendVisible] = useState(() => {
-    if (typeof window === "undefined") return true;
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    isMobileViewport()
+  );
+  const [sidebarView, setSidebarView] = useState("buscar");
 
-    return !window.matchMedia("(max-width: 768px)").matches;
-  });
-
-  const [activeTool, setActiveTool] = useState("identificar");
+  const [legendVisible, setLegendVisible] = useState(false);
+  const [activeTool, setActiveTool] = useState("navegar");
   const [resetCounter, setResetCounter] = useState(0);
 
   const [status, setStatus] = useState(
-    "Mueve o acerca el mapa para cargar predios por zona visible."
+    "Preparando las capas de Guataquí..."
   );
-
-  const [loadingPredios, setLoadingPredios] = useState(false);
-
-  const [prediosMeta, setPrediosMeta] = useState({
-    count: 0,
-    total: 0,
-    totalGeneral: 0,
-    limit: LIMIT_PREDIOS_POR_VISTA,
-  });
-
-  const [currentBounds, setCurrentBounds] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [isCertificateModalOpen, setIsCertificateModalOpen] = useState(false);
   const [certificateError, setCertificateError] = useState("");
   const [certificateLoading, setCertificateLoading] = useState(false);
 
-  const fetchTimeoutRef = useRef(null);
-  const lastBboxKeyRef = useRef("");
+  const loadTimerRef = useRef(null);
+  const lastLoadKeyRef = useRef("");
   const requestIdRef = useRef(0);
+  const catalogInitializedRef = useRef(false);
 
-  /*
-    Cambia automáticamente la visibilidad de la leyenda cuando
-    la pantalla pasa de escritorio a móvil o viceversa.
-  */
+  const activeLayerKey = useMemo(
+    () => [...activeLayerIds].sort().join("|"),
+    [activeLayerIds]
+  );
+
+  const layersForMap = useMemo(() => {
+    return layerCatalog
+      .filter((layer) => activeLayerIds.includes(layer.id))
+      .sort((a, b) => a.order - b.order)
+      .map((layer) => ({
+        info: layer,
+        payload: layerData[layer.id] || null,
+      }));
+  }, [layerCatalog, activeLayerIds, layerData]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadConfiguration() {
+      try {
+        const response = await fetch(`${API_URL}/api/config`);
+
+        if (!response.ok) {
+          throw new Error("No fue posible cargar la configuración del visor.");
+        }
+
+        const payload = await response.json();
+
+        if (cancelled) return;
+
+        const layers = Array.isArray(payload.layers) ? payload.layers : [];
+
+        setLayerCatalog(layers);
+
+        if (payload.map?.center && payload.map?.zoom) {
+          setMapConfig({
+            center: payload.map.center,
+            zoom: payload.map.zoom,
+          });
+        }
+
+        if (!catalogInitializedRef.current) {
+          const defaults = layers
+            .filter((layer) => layer.defaultVisible)
+            .sort((a, b) => a.order - b.order)
+            .map((layer) => layer.id);
+
+          setActiveLayerIds(defaults);
+          catalogInitializedRef.current = true;
+        }
+
+        setStatus("Configuración de Guataquí cargada correctamente.");
+      } catch (error) {
+        console.error("Error cargando configuración:", error);
+
+        if (!cancelled) {
+          setStatus("No fue posible cargar la configuración del backend.");
+        }
+      }
+    }
+
+    loadConfiguration();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 768px)");
 
-    function handleScreenChange(event) {
-      setLegendVisible(!event.matches);
+    function handleViewportChange(event) {
+      if (event.matches) {
+        setSidebarCollapsed(true);
+      }
     }
 
-    if (mediaQuery.addEventListener) {
-      mediaQuery.addEventListener("change", handleScreenChange);
-    } else {
-      mediaQuery.addListener(handleScreenChange);
-    }
+    mediaQuery.addEventListener?.("change", handleViewportChange);
 
     return () => {
-      if (mediaQuery.removeEventListener) {
-        mediaQuery.removeEventListener("change", handleScreenChange);
-      } else {
-        mediaQuery.removeListener(handleScreenChange);
-      }
+      mediaQuery.removeEventListener?.("change", handleViewportChange);
     };
   }, []);
 
   useEffect(() => {
+    if (!currentBounds) return;
+
+    const ids = activeLayerKey ? activeLayerKey.split("|") : [];
+
+    if (loadTimerRef.current) {
+      clearTimeout(loadTimerRef.current);
+    }
+
+    if (!ids.length) {
+      setLayerData({});
+      setLoadingLayerIds([]);
+      setStatus("No hay capas activas.");
+      return;
+    }
+
+    loadTimerRef.current = setTimeout(() => {
+      loadActiveLayers(currentBounds, ids);
+    }, 320);
+
     return () => {
-      if (fetchTimeoutRef.current) {
-        clearTimeout(fetchTimeoutRef.current);
+      if (loadTimerRef.current) {
+        clearTimeout(loadTimerRef.current);
+      }
+    };
+  }, [currentBounds, activeLayerKey]);
+
+  useEffect(() => {
+    return () => {
+      if (loadTimerRef.current) {
+        clearTimeout(loadTimerRef.current);
       }
     };
   }, []);
 
-  async function cargarPrediosPorBbox(bounds, force = false) {
-    if (!bounds) return;
+  function sortLayerIds(ids) {
+    const orderById = new Map(
+      layerCatalog.map((layer) => [layer.id, layer.order])
+    );
 
-    const bboxKey = crearBboxKey(bounds);
+    return [...new Set(ids)].sort(
+      (a, b) => (orderById.get(a) ?? 999) - (orderById.get(b) ?? 999)
+    );
+  }
 
-    if (!force && bboxKey === lastBboxKeyRef.current) {
+  async function loadActiveLayers(bounds, ids, force = false) {
+    if (!bounds || !ids.length) return;
+
+    const requestKey = `${boundsKey(bounds)}|${[...ids].sort().join("|")}`;
+
+    if (!force && requestKey === lastLoadKeyRef.current) {
       return;
     }
 
-    lastBboxKeyRef.current = bboxKey;
+    lastLoadKeyRef.current = requestKey;
 
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
@@ -134,185 +232,250 @@ function App() {
       bounds.maxLat,
     ].join(",");
 
-    const center =
-      Number.isFinite(Number(bounds.centerLng)) &&
-        Number.isFinite(Number(bounds.centerLat))
-        ? `&center=${bounds.centerLng},${bounds.centerLat}`
-        : "";
+    const center = `${bounds.centerLng},${bounds.centerLat}`;
 
-    setLoadingPredios(true);
+    setLoadingLayerIds(ids);
+    setLayerErrors({});
+    setStatus(`Cargando ${ids.length} capa${ids.length === 1 ? "" : "s"}...`);
 
-    try {
-      const response = await fetch(
-        `${API_URL}/api/predios?bbox=${bbox}${center}&limit=${LIMIT_PREDIOS_POR_VISTA}`
-      );
-
-      if (!response.ok) {
-        throw new Error("No fue posible cargar los predios.");
-      }
-
-      const payload = await response.json();
-
-      /*
-        Evita que una petición antigua sobrescriba una petición más reciente.
-      */
-      if (requestId !== requestIdRef.current) {
-        return;
-      }
-
-      const data = Array.isArray(payload) ? payload : payload.data || [];
-
-      setPredios(data);
-
-      setPrediosMeta({
-        count: payload.count ?? data.length,
-        total: payload.total ?? data.length,
-        totalGeneral: payload.totalGeneral ?? data.length,
-        limit: payload.limit ?? LIMIT_PREDIOS_POR_VISTA,
-      });
-
-      if ((payload.total ?? data.length) > (payload.count ?? data.length)) {
-        setStatus(
-          `Se muestran ${payload.count} de ${payload.total} predios en esta vista. Acerca más el mapa para reducir la carga.`
+    const results = await Promise.allSettled(
+      ids.map(async (layerId) => {
+        const response = await fetch(
+          `${API_URL}/api/capas/${encodeURIComponent(
+            layerId
+          )}?bbox=${bbox}&center=${center}&limit=${ELEMENTOS_POR_CAPA}`
         );
-      } else {
-        setStatus(`${data.length} predios cargados en la zona visible.`);
-      }
-    } catch (error) {
-      console.error("Error cargando predios:", error);
-      setStatus("Error al cargar predios por zona visible.");
-    } finally {
-      if (requestId === requestIdRef.current) {
-        setLoadingPredios(false);
-      }
-    }
-  }
 
-  function manejarCambioDeVista(bounds) {
-    setCurrentBounds(bounds);
+        if (!response.ok) {
+          let message = `No fue posible cargar la capa ${layerId}.`;
 
-    if (fetchTimeoutRef.current) {
-      clearTimeout(fetchTimeoutRef.current);
-    }
+          try {
+            const errorPayload = await response.json();
+            message = errorPayload.message || message;
+          } catch {
+            // Se conserva el mensaje genérico.
+          }
 
-    /*
-      Pequeña espera para no hacer peticiones mientras el usuario
-      todavía está moviendo o acercando el mapa.
-    */
-    fetchTimeoutRef.current = setTimeout(() => {
-      cargarPrediosPorBbox(bounds);
-    }, 350);
-  }
+          throw new Error(message);
+        }
 
-  function recargarVistaActual() {
-    if (!currentBounds) {
-      setStatus("Aún no hay una vista del mapa para recargar.");
+        const payload = await response.json();
+
+        return {
+          layerId,
+          payload: {
+            ...payload,
+            loadedAt: Date.now(),
+          },
+        };
+      })
+    );
+
+    if (requestId !== requestIdRef.current) {
       return;
     }
 
-    cargarPrediosPorBbox(currentBounds, true);
+    const nextData = {};
+    const nextErrors = {};
+    let totalLoaded = 0;
+    let truncatedLayers = 0;
+
+    results.forEach((result, index) => {
+      const layerId = ids[index];
+
+      if (result.status === "fulfilled") {
+        nextData[layerId] = result.value.payload;
+        totalLoaded += result.value.payload.count || 0;
+
+        if (result.value.payload.truncated) {
+          truncatedLayers += 1;
+        }
+      } else {
+        nextErrors[layerId] =
+          result.reason?.message || "Error al cargar esta capa.";
+      }
+    });
+
+    setLayerData(nextData);
+    setLayerErrors(nextErrors);
+    setLoadingLayerIds([]);
+
+    const failedCount = Object.keys(nextErrors).length;
+
+    if (failedCount > 0) {
+      setStatus(
+        `Se cargaron ${totalLoaded} elementos. ${failedCount} capa${failedCount === 1 ? " presentó" : "s presentaron"
+        } un error.`
+      );
+    } else if (truncatedLayers > 0) {
+      setStatus(
+        `${totalLoaded} elementos cargados. Acerca el mapa para ver más detalle en las capas limitadas.`
+      );
+    } else {
+      setStatus(`${totalLoaded} elementos cargados en la zona visible.`);
+    }
   }
 
-  function seleccionarPredio(predio) {
+  function handleBoundsChange(bounds) {
+    setCurrentBounds(bounds);
+  }
+
+  function reloadCurrentView() {
+    if (!currentBounds) {
+      setStatus("Aún no hay una vista del mapa para actualizar.");
+      return;
+    }
+
+    const ids = activeLayerKey ? activeLayerKey.split("|") : [];
+    lastLoadKeyRef.current = "";
+    loadActiveLayers(currentBounds, ids, true);
+  }
+
+  function toggleLayer(layerId) {
+    const isCurrentlyActive = activeLayerIds.includes(layerId);
+
+    setActiveLayerIds((previous) => {
+      if (previous.includes(layerId)) {
+        return previous.filter((id) => id !== layerId);
+      }
+
+      return sortLayerIds([...previous, layerId]);
+    });
+
+    if (isCurrentlyActive) {
+      setLayerData((previous) => {
+        const next = { ...previous };
+        delete next[layerId];
+        return next;
+      });
+
+      if (selectedPredio?.layerId === layerId) {
+        setSelectedPredio(null);
+      }
+    }
+  }
+
+  function activateAllLayers() {
+    setActiveLayerIds(
+      layerCatalog
+        .slice()
+        .sort((a, b) => a.order - b.order)
+        .map((layer) => layer.id)
+    );
+  }
+
+  function clearAllLayers() {
+    setActiveLayerIds([]);
+    setLayerData({});
+    setSelectedPredio(null);
+  }
+
+  async function searchPredios(event) {
+    event?.preventDefault();
+
+    const query = searchTerm.trim();
+
+    if (!query) {
+      setSearchError("Escribe un código, sector, vereda o zona.");
+      setSearchResults([]);
+      return;
+    }
+
+    setSearchLoading(true);
+    setSearchError("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/predios/buscar?q=${encodeURIComponent(query)}&limit=20`
+      );
+
+      if (!response.ok) {
+        throw new Error("No fue posible realizar la búsqueda.");
+      }
+
+      const payload = await response.json();
+      const results = Array.isArray(payload.data) ? payload.data : [];
+
+      setSearchResults(results);
+
+      if (!results.length) {
+        setSearchError("No se encontraron predios con ese criterio.");
+        setStatus("La búsqueda no produjo resultados.");
+      } else {
+        setStatus(`${results.length} resultado${results.length === 1 ? "" : "s"} encontrado${results.length === 1 ? "" : "s"}.`);
+      }
+    } catch (error) {
+      console.error("Error buscando predios:", error);
+      setSearchError("Error de conexión durante la búsqueda.");
+      setSearchResults([]);
+      setStatus("No fue posible consultar los predios.");
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
+  function selectSearchResult(predio) {
     setSelectedPredio(predio);
-    setActiveTool("identificar");
+    setSearchResults([]);
+    setSearchError("");
+    setActiveTool("navegar");
+
+    if (predio.layerId && !activeLayerIds.includes(predio.layerId)) {
+      setActiveLayerIds((previous) =>
+        sortLayerIds([...previous, predio.layerId])
+      );
+    }
+
     setStatus(`Predio seleccionado: ${predio.codigo}`);
   }
 
-  async function buscarPredio() {
-    const busqueda = normalizarTexto(searchTerm);
-
-    if (!busqueda) {
-      setStatus("Ingresa un código, dirección, uso, propietario o sector.");
-      return;
-    }
+  async function selectTerrainFromMap(code) {
+    if (!code) return;
 
     try {
       const response = await fetch(
-        `${API_URL}/api/predios/buscar?q=${encodeURIComponent(
-          searchTerm
-        )}&limit=1`
+        `${API_URL}/api/predios/${encodeURIComponent(code)}`
       );
 
       if (!response.ok) {
-        throw new Error("No fue posible buscar el predio.");
+        throw new Error("No fue posible consultar el predio.");
       }
 
-      const payload = await response.json();
-      const encontrado = payload.data?.[0];
+      const predio = await response.json();
 
-      if (!encontrado) {
-        setStatus("No se encontró ningún predio con ese criterio de búsqueda.");
-        return;
-      }
-
-      setPrediosVisible(true);
-      setSelectedPredio(encontrado);
-      setActiveTool("identificar");
-
-      setPredios((prev) => {
-        const existe = prev.some(
-          (predio) => String(predio.id) === String(encontrado.id)
-        );
-
-        if (existe) return prev;
-
-        return [encontrado, ...prev];
-      });
-
-      setStatus(`Predio encontrado: ${encontrado.codigo}`);
+      setSelectedPredio(predio);
+      setSidebarView("buscar");
+      setStatus(`Predio seleccionado: ${predio.codigo}`);
     } catch (error) {
-      console.error("Error buscando predio:", error);
-      setStatus("Error al buscar el predio.");
+      console.error("Error consultando predio:", error);
+      setStatus("No fue posible cargar el detalle del predio.");
     }
   }
 
-  function alternarCapaPredios() {
-    setPrediosVisible((prev) => {
-      const nuevoValor = !prev;
+  function changeTool(tool) {
+    setActiveTool((current) => {
+      const next = current === tool ? "navegar" : tool;
 
-      setStatus(
-        nuevoValor ? "Capa de predios visible." : "Capa de predios oculta."
-      );
+      if (next === "area") {
+        setStatus("Medición de área activa. Marca al menos tres puntos.");
+      } else if (next === "distancia") {
+        setStatus("Medición de distancia activa. Marca al menos dos puntos.");
+      } else {
+        setStatus("Modo de navegación activo.");
+      }
 
-      return nuevoValor;
+      return next;
     });
   }
 
-  function alternarLeyenda() {
-    setLegendVisible((prev) => {
-      const nuevoValor = !prev;
-
-      setStatus(nuevoValor ? "Leyenda visible." : "Leyenda oculta.");
-
-      return nuevoValor;
-    });
-  }
-
-  function cambiarHerramienta(tool) {
-    setActiveTool(tool);
-
-    if (tool === "identificar") {
-      setStatus("Herramienta identificar activa. Haz clic sobre un predio.");
-    }
-
-    if (tool === "distancia") {
-      setStatus("Herramienta distancia activa. Haz clic en dos o más puntos.");
-    }
-
-    if (tool === "area") {
-      setStatus("Herramienta área activa. Haz clic en tres o más puntos.");
-    }
-  }
-
-  function volverVistaInicial() {
+  function resetMapView() {
+    setActiveTool("navegar");
     setSelectedPredio(null);
-    setActiveTool("identificar");
-    setResetCounter((prev) => prev + 1);
-    setStatus("Vista inicial restaurada.");
+    setResetCounter((value) => value + 1);
+    setStatus("Vista inicial de Guataquí restaurada.");
   }
 
-  function abrirModalCertificado() {
+  function openCertificateModal() {
     if (!selectedPredio) {
       setStatus("Selecciona primero un predio para generar el certificado.");
       return;
@@ -322,16 +485,16 @@ function App() {
     setIsCertificateModalOpen(true);
   }
 
-  function cerrarModalCertificado() {
+  function closeCertificateModal() {
     if (certificateLoading) return;
 
     setIsCertificateModalOpen(false);
     setCertificateError("");
   }
 
-  async function generarCertificadoPdf(password) {
+  async function generateCertificatePdf(password) {
     if (!selectedPredio) {
-      setStatus("Selecciona primero un predio para generar el certificado.");
+      setCertificateError("No hay un predio seleccionado.");
       return;
     }
 
@@ -358,170 +521,105 @@ function App() {
       );
 
       if (!response.ok) {
-        let errorMessage = "No fue posible generar el certificado.";
+        let message = "No fue posible generar el certificado.";
 
         try {
-          const errorData = await response.json();
-          errorMessage = errorData.message || errorMessage;
+          const payload = await response.json();
+          message = payload.message || message;
         } catch {
-          errorMessage = "Error inesperado al generar el certificado.";
+          // Se conserva el mensaje genérico.
         }
 
-        setCertificateError(errorMessage);
-        setStatus(errorMessage);
+        setCertificateError(message);
+        setStatus(message);
         return;
       }
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-
       const link = document.createElement("a");
+
       link.href = url;
-      link.download = `certificado-${selectedPredio.codigo}.pdf`;
+      link.download = `certificado-${sanitizeDownloadName(
+        selectedPredio.codigo
+      )}.pdf`;
 
       document.body.appendChild(link);
       link.click();
       link.remove();
-
       window.URL.revokeObjectURL(url);
 
-      setStatus(`Certificado generado para ${selectedPredio.codigo}.`);
       setIsCertificateModalOpen(false);
-      setCertificateError("");
+      setStatus(`Certificado generado para ${selectedPredio.codigo}.`);
     } catch (error) {
       console.error("Error generando certificado:", error);
       setCertificateError("Error de conexión con el backend.");
-      setStatus("Error de conexión con el backend.");
+      setStatus("No fue posible generar el certificado.");
     } finally {
       setCertificateLoading(false);
     }
   }
 
-  function descargarDatosGeoJson() {
-    if (!predios.length) {
-      setStatus("No hay predios visibles para descargar.");
-      return;
-    }
-
-    const features = predios.map((predio) => {
-      const ring = predio.coords.map(([lat, lng]) => [lng, lat]);
-
-      if (ring.length) {
-        ring.push([...ring[0]]);
-      }
-
-      return {
-        type: "Feature",
-        properties: {
-          id: predio.id,
-          codigo: predio.codigo,
-          propietario: predio.propietario,
-          direccion: predio.direccion,
-          matricula: predio.matricula,
-          area: predio.area,
-          uso: predio.uso,
-          estado: predio.estado,
-          barrio: predio.barrio,
-        },
-        geometry: {
-          type: "Polygon",
-          coordinates: [ring],
-        },
-      };
-    });
-
-    const geojson = {
-      type: "FeatureCollection",
-      name: "predios_visibles_geovisor_beta",
-      features,
-    };
-
-    const blob = new Blob([JSON.stringify(geojson, null, 2)], {
-      type: "application/geo+json",
-    });
-
-    const url = window.URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "predios-visibles-geovisor-beta.geojson";
-
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    window.URL.revokeObjectURL(url);
-
-    setStatus("Predios visibles descargados en formato GeoJSON.");
-  }
-
-  function imprimirMapa() {
-    setStatus("Preparando impresión del mapa.");
-
-    setTimeout(() => {
-      window.print();
-    }, 300);
-  }
-
-  function alternarSidebar() {
-    setSidebarCollapsed((prev) => !prev);
-  }
-
   return (
     <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <Header
-        onCertificateClick={abrirModalCertificado}
-        onToggleSidebar={alternarSidebar}
-        sidebarCollapsed={sidebarCollapsed}
+        selectedPredio={selectedPredio}
+        onCertificateClick={openCertificateModal}
       />
 
       <main className="app-body">
         {!sidebarCollapsed && (
           <Sidebar
-            selectedPredio={selectedPredio}
+            activeView={sidebarView}
+            onViewChange={setSidebarView}
+            onClose={() => setSidebarCollapsed(true)}
             searchTerm={searchTerm}
             onSearchTermChange={setSearchTerm}
-            onSearch={buscarPredio}
-            prediosVisible={prediosVisible}
-            legendVisible={legendVisible}
-            activeTool={activeTool}
-            onToggleLayer={alternarCapaPredios}
-            onToggleLegend={alternarLeyenda}
-            onToolChange={cambiarHerramienta}
-            onResetView={volverVistaInicial}
-            onGeneratePdf={abrirModalCertificado}
-            onDownloadData={descargarDatosGeoJson}
-            onPrint={imprimirMapa}
-            onReloadVisible={recargarVistaActual}
-            loadingPredios={loadingPredios}
-            prediosMeta={prediosMeta}
+            onSearch={searchPredios}
+            searchResults={searchResults}
+            searchLoading={searchLoading}
+            searchError={searchError}
+            onSelectResult={selectSearchResult}
+            selectedPredio={selectedPredio}
+            onGenerateCertificate={openCertificateModal}
+            layerCatalog={layerCatalog}
+            activeLayerIds={activeLayerIds}
+            loadingLayerIds={loadingLayerIds}
+            layerErrors={layerErrors}
+            onToggleLayer={toggleLayer}
+            onActivateAll={activateAllLayers}
+            onClearAll={clearAllLayers}
+            onReloadLayers={reloadCurrentView}
           />
         )}
 
         <section className="map-section">
           <MapView
-            predios={predios}
+            mapConfig={mapConfig}
+            layers={layersForMap}
+            activeLayerIds={activeLayerIds}
             selectedPredio={selectedPredio}
-            onSelectPredio={seleccionarPredio}
-            prediosVisible={prediosVisible}
-            legendVisible={legendVisible}
-            onToggleLegend={alternarLeyenda}
+            onTerrainClick={selectTerrainFromMap}
             activeTool={activeTool}
+            onToolChange={changeTool}
+            onResetView={resetMapView}
             resetCounter={resetCounter}
-            status={status}
+            onBoundsChange={handleBoundsChange}
             onStatusChange={setStatus}
-            onBoundsChange={manejarCambioDeVista}
-            loadingPredios={loadingPredios}
-            prediosMeta={prediosMeta}
+            status={status}
+            legendVisible={legendVisible}
+            onToggleLegend={() => setLegendVisible((value) => !value)}
             sidebarCollapsed={sidebarCollapsed}
+            onOpenSidebar={() => setSidebarCollapsed(false)}
+            loadingLayerIds={loadingLayerIds}
           />
         </section>
       </main>
 
       <CertificateModal
         isOpen={isCertificateModalOpen}
-        onClose={cerrarModalCertificado}
-        onConfirm={generarCertificadoPdf}
+        onClose={closeCertificateModal}
+        onConfirm={generateCertificatePdf}
         selectedPredio={selectedPredio}
         loading={certificateLoading}
         error={certificateError}

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import MapView from "./components/MapView";
@@ -8,6 +8,8 @@ import "./App.css";
 const API_URL = (
   import.meta.env.VITE_API_URL || "http://localhost:3001"
 ).replace(/\/$/, "");
+
+// Puedes aumentar o reducir este valor según el rendimiento.
 const LIMIT_PREDIOS_POR_VISTA = 3000;
 
 function normalizarTexto(texto) {
@@ -39,14 +41,26 @@ function App() {
   const [selectedPredio, setSelectedPredio] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [prediosVisible, setPrediosVisible] = useState(true);
-  const [legendVisible, setLegendVisible] = useState(true);
+
+  /*
+    En escritorio la leyenda inicia abierta.
+    En celular inicia cerrada para no tapar el mapa.
+  */
+  const [legendVisible, setLegendVisible] = useState(() => {
+    if (typeof window === "undefined") return true;
+
+    return !window.matchMedia("(max-width: 768px)").matches;
+  });
+
   const [activeTool, setActiveTool] = useState("identificar");
   const [resetCounter, setResetCounter] = useState(0);
+
   const [status, setStatus] = useState(
     "Mueve o acerca el mapa para cargar predios por zona visible."
   );
 
   const [loadingPredios, setLoadingPredios] = useState(false);
+
   const [prediosMeta, setPrediosMeta] = useState({
     count: 0,
     total: 0,
@@ -65,6 +79,40 @@ function App() {
   const lastBboxKeyRef = useRef("");
   const requestIdRef = useRef(0);
 
+  /*
+    Cambia automáticamente la visibilidad de la leyenda cuando
+    la pantalla pasa de escritorio a móvil o viceversa.
+  */
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 768px)");
+
+    function handleScreenChange(event) {
+      setLegendVisible(!event.matches);
+    }
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", handleScreenChange);
+    } else {
+      mediaQuery.addListener(handleScreenChange);
+    }
+
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener("change", handleScreenChange);
+      } else {
+        mediaQuery.removeListener(handleScreenChange);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current);
+      }
+    };
+  }, []);
+
   async function cargarPrediosPorBbox(bounds, force = false) {
     if (!bounds) return;
 
@@ -79,7 +127,12 @@ function App() {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
 
-    const bbox = `${bounds.minLng},${bounds.minLat},${bounds.maxLng},${bounds.maxLat}`;
+    const bbox = [
+      bounds.minLng,
+      bounds.minLat,
+      bounds.maxLng,
+      bounds.maxLat,
+    ].join(",");
 
     const center =
       Number.isFinite(Number(bounds.centerLng)) &&
@@ -100,6 +153,9 @@ function App() {
 
       const payload = await response.json();
 
+      /*
+        Evita que una petición antigua sobrescriba una petición más reciente.
+      */
       if (requestId !== requestIdRef.current) {
         return;
       }
@@ -107,6 +163,7 @@ function App() {
       const data = Array.isArray(payload) ? payload : payload.data || [];
 
       setPredios(data);
+
       setPrediosMeta({
         count: payload.count ?? data.length,
         total: payload.total ?? data.length,
@@ -114,7 +171,7 @@ function App() {
         limit: payload.limit ?? LIMIT_PREDIOS_POR_VISTA,
       });
 
-      if (payload.total > payload.count) {
+      if ((payload.total ?? data.length) > (payload.count ?? data.length)) {
         setStatus(
           `Se muestran ${payload.count} de ${payload.total} predios en esta vista. Acerca más el mapa para reducir la carga.`
         );
@@ -138,6 +195,10 @@ function App() {
       clearTimeout(fetchTimeoutRef.current);
     }
 
+    /*
+      Pequeña espera para no hacer peticiones mientras el usuario
+      todavía está moviendo o acercando el mapa.
+    */
     fetchTimeoutRef.current = setTimeout(() => {
       cargarPrediosPorBbox(bounds);
     }, 350);
@@ -317,10 +378,11 @@ function App() {
       const link = document.createElement("a");
       link.href = url;
       link.download = `certificado-${selectedPredio.codigo}.pdf`;
+
       document.body.appendChild(link);
       link.click();
-
       link.remove();
+
       window.URL.revokeObjectURL(url);
 
       setStatus(`Certificado generado para ${selectedPredio.codigo}.`);
@@ -383,10 +445,11 @@ function App() {
     const link = document.createElement("a");
     link.href = url;
     link.download = "predios-visibles-geovisor-beta.geojson";
+
     document.body.appendChild(link);
     link.click();
-
     link.remove();
+
     window.URL.revokeObjectURL(url);
 
     setStatus("Predios visibles descargados en formato GeoJSON.");
@@ -442,6 +505,7 @@ function App() {
             onSelectPredio={seleccionarPredio}
             prediosVisible={prediosVisible}
             legendVisible={legendVisible}
+            onToggleLegend={alternarLeyenda}
             activeTool={activeTool}
             resetCounter={resetCounter}
             status={status}

@@ -5,7 +5,9 @@
   flex-direction: column;
 }
 
-/* HEADER */
+/* ==============================
+   HEADER
+================================= */
 
 .app-header {
   height: 78px;
@@ -76,18 +78,20 @@
   border-color: #ffffff;
 }
 
-/* LAYOUT */
+/* ==============================
+   LAYOUT
+================================= */
 
 .app-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 390px 1fr;
+  grid-template-columns: 390px minmax(0, 1fr);
   min-height: 0;
   transition: 0.25s ease;
 }
 
 .app.sidebar-collapsed .app-body {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sidebar {
@@ -103,7 +107,9 @@
   min-height: 0;
 }
 
-/* SIDEBAR */
+/* ==============================
+   SIDEBAR
+================================= */
 
 .sidebar-card {
   background: #ffffff;
@@ -190,6 +196,7 @@
 
 .search-input {
   flex: 1;
+  min-width: 0;
   border: 1px solid #cbd5e1;
   border-radius: 12px;
   padding: 11px 12px;
@@ -328,12 +335,15 @@
   background: #115e59;
 }
 
-/* MAPA */
+/* ==============================
+   MAPA
+================================= */
 
 .map-wrapper {
   position: relative;
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 .leaflet-map {
@@ -374,6 +384,7 @@
   top: 18px;
   right: 18px;
   z-index: 600;
+  min-width: 190px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid #d1d5db;
   border-radius: 16px;
@@ -382,7 +393,6 @@
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
   display: grid;
   gap: 4px;
-  min-width: 190px;
 }
 
 .map-floating-panel strong {
@@ -399,11 +409,15 @@
   color: #64748b;
 }
 
+/* ==============================
+   LEYENDA
+================================= */
+
 .map-legend {
   position: absolute;
   top: 92px;
   right: 18px;
-  z-index: 600;
+  z-index: 620;
   width: 225px;
   background: rgba(255, 255, 255, 0.97);
   border: 1px solid #d1d5db;
@@ -412,10 +426,43 @@
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
 }
 
-.map-legend h3 {
-  margin: 0 0 12px;
+.map-legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.map-legend-header h3 {
+  margin: 0;
   color: #0f766e;
   font-size: 15px;
+}
+
+.legend-close-button {
+  display: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+  place-items: center;
+}
+
+.legend-close-button:hover {
+  background: #e2e8f0;
+  color: #0f766e;
+}
+
+.mobile-legend-toggle {
+  display: none;
 }
 
 .legend-item {
@@ -423,6 +470,10 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 9px;
+}
+
+.legend-item:last-child {
+  margin-bottom: 0;
 }
 
 .legend-item p {
@@ -464,6 +515,10 @@
   border-color: #7c3aed;
 }
 
+/* ==============================
+   MEDICIÓN Y ESTADO
+================================= */
+
 .measurement-panel {
   position: absolute;
   right: 18px;
@@ -489,14 +544,19 @@
   left: 18px;
   bottom: 18px;
   z-index: 600;
+  max-width: 70%;
   background: rgba(15, 23, 42, 0.88);
   color: #ffffff;
   border-radius: 999px;
   padding: 10px 15px;
   font-size: 12px;
+  line-height: 1.4;
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.2);
-  max-width: 70%;
 }
+
+/* ==============================
+   LOADING
+================================= */
 
 .loading-layer {
   position: absolute;
@@ -509,7 +569,12 @@
   pointer-events: none;
 }
 
-.loading-layer p {
+.loading-content {
+  display: grid;
+  justify-items: center;
+}
+
+.loading-content p {
   margin: 10px 0 0;
   background: rgba(15, 23, 42, 0.85);
   color: #ffffff;
@@ -534,7 +599,9 @@
   }
 }
 
-/* MODAL CERTIFICADO */
+/* ==============================
+   MODAL CERTIFICADO
+================================= */
 
 .modal-overlay {
   position: fixed;
@@ -755,7 +822,9 @@
   cursor: not-allowed;
 }
 
-/* RESPONSIVE */
+/* ==============================
+   TABLET
+================================= */
 
 @media (max-width: 950px) {
   .app {
@@ -784,12 +853,7 @@
 
   .map-section {
     height: 65vh;
-  }
-
-  .map-floating-panel,
-  .map-legend,
-  .measurement-panel {
-    right: 10px;
+    min-height: 500px;
   }
 
   .map-status {
@@ -797,9 +861,138 @@
   }
 }
 
+/* ==============================
+   CELULAR
+================================= */
+
+@media (max-width: 768px) {
+  .map-section {
+    height: 72vh;
+    min-height: 520px;
+  }
+
+  /*
+    Panel de predios visibles.
+  */
+  .map-floating-panel {
+    top: 12px;
+    right: 12px;
+    width: 180px;
+    min-width: 0;
+    max-width: 46vw;
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
+
+  /*
+    Indicador de herramienta. Se limita para que no se cruce
+    con el panel de predios visibles.
+  */
+  .map-tool-indicator {
+    top: 12px;
+    left: 52px;
+    right: calc(46vw + 24px);
+    max-width: none;
+    padding: 9px 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-radius: 14px;
+  }
+
+  /*
+    La leyenda se muestra como un panel inferior compacto.
+  */
+  .map-legend {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 82px;
+    width: auto;
+    max-height: min(42vh, 280px);
+    padding: 14px;
+    overflow-y: auto;
+    border-radius: 18px;
+    z-index: 680;
+  }
+
+  .legend-close-button {
+    display: grid;
+  }
+
+  /*
+    Botón flotante que aparece cuando la leyenda está cerrada.
+  */
+  .mobile-legend-toggle {
+    position: absolute;
+    top: 96px;
+    right: 12px;
+    z-index: 650;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 13px;
+    border: 1px solid #d1d5db;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.97);
+    color: #0f766e;
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18);
+  }
+
+  .mobile-legend-toggle:active {
+    transform: scale(0.97);
+  }
+
+  .measurement-panel {
+    right: 10px;
+    left: 10px;
+    bottom: 76px;
+    max-width: none;
+  }
+
+  .map-status {
+    left: 10px;
+    right: 10px;
+    bottom: 12px;
+    max-width: none;
+    border-radius: 16px;
+    padding: 9px 12px;
+    font-size: 11px;
+  }
+
+  .loading-content p {
+    max-width: calc(100vw - 40px);
+    text-align: center;
+  }
+}
+
+/* ==============================
+   CELULAR PEQUEÑO
+================================= */
+
 @media (max-width: 520px) {
+  .app-header {
+    padding: 12px 14px;
+  }
+
   .header-brand h1 {
     font-size: 18px;
+  }
+
+  .header-brand p {
+    font-size: 12px;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-btn {
+    padding: 8px 12px;
+    font-size: 12px;
   }
 
   .tool-grid,
@@ -821,6 +1014,18 @@
 
   .property-info strong {
     text-align: left;
+  }
+
+  .map-floating-panel {
+    width: 175px;
+    max-width: 47vw;
+    font-size: 12px;
+  }
+
+  .map-tool-indicator {
+    left: 48px;
+    right: calc(47vw + 22px);
+    font-size: 11px;
   }
 
   .certificate-modal {
@@ -851,14 +1056,18 @@
   }
 }
 
-/* IMPRESIÓN */
+/* ==============================
+   IMPRESIÓN
+================================= */
 
 @media print {
+
   .app-header,
   .sidebar,
   .map-floating-panel,
   .map-tool-indicator,
   .map-legend,
+  .mobile-legend-toggle,
   .measurement-panel,
   .map-status,
   .loading-layer {

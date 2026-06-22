@@ -11,7 +11,7 @@ import {
 import L from "leaflet";
 import { useEffect, useMemo, useState } from "react";
 
-const INITIAL_CENTER = [4.862449952790654, -74.05591147976575];
+const INITIAL_CENTER = [4.8617, -74.0589];
 const INITIAL_ZOOM = 15;
 
 function formatDistance(meters) {
@@ -47,6 +47,7 @@ function calculatePolygonArea(points) {
     if (points.length < 3) return 0;
 
     const earthRadius = 6378137;
+
     const radians = points.map(([lat, lng]) => [
         (lat * Math.PI) / 180,
         (lng * Math.PI) / 180,
@@ -109,7 +110,7 @@ function MapController({
     const map = useMap();
 
     useEffect(() => {
-        if (!selectedPredio) return;
+        if (!selectedPredio?.coords?.length) return;
 
         const bounds = L.latLngBounds(selectedPredio.coords);
 
@@ -166,6 +167,7 @@ function BoundsWatcher({ onBoundsChange }) {
         moveend() {
             emitirBounds();
         },
+
         zoomend() {
             emitirBounds();
         },
@@ -192,6 +194,7 @@ function MapView({
     onSelectPredio,
     prediosVisible,
     legendVisible,
+    onToggleLegend,
     activeTool,
     resetCounter,
     status,
@@ -211,6 +214,10 @@ function MapView({
         setMeasurementResult("");
     }, [activeTool, resetCounter]);
 
+    /*
+      Mantiene visible el predio encontrado mediante búsqueda,
+      aunque no forme parte de la última carga por BBOX.
+    */
     const prediosParaMapa = useMemo(() => {
         const map = new Map();
 
@@ -262,7 +269,10 @@ function MapView({
                     onStatusChange(result);
                 } else {
                     setMeasurementResult("Selecciona al menos dos puntos.");
-                    onStatusChange("Selecciona al menos dos puntos para medir distancia.");
+
+                    onStatusChange(
+                        "Selecciona al menos dos puntos para medir distancia."
+                    );
                 }
             }
 
@@ -275,7 +285,10 @@ function MapView({
                     onStatusChange(result);
                 } else {
                     setMeasurementResult("Selecciona al menos tres puntos.");
-                    onStatusChange("Selecciona al menos tres puntos para medir área.");
+
+                    onStatusChange(
+                        "Selecciona al menos tres puntos para medir área."
+                    );
                 }
             }
 
@@ -303,7 +316,7 @@ function MapView({
                 center={INITIAL_CENTER}
                 zoom={INITIAL_ZOOM}
                 className="leaflet-map"
-                preferCanvas={true}
+                preferCanvas
             >
                 <MapController
                     selectedPredio={selectedPredio}
@@ -340,20 +353,30 @@ function MapView({
                             <Popup>
                                 <div className="popup-content">
                                     <h3>{predio.codigo}</h3>
+
                                     <p>
-                                        <strong>Propietario:</strong> {predio.propietario}
+                                        <strong>Propietario:</strong>{" "}
+                                        {predio.propietario || "Sin información"}
                                     </p>
+
                                     <p>
-                                        <strong>Dirección:</strong> {predio.direccion}
+                                        <strong>Dirección:</strong>{" "}
+                                        {predio.direccion || "Sin información"}
                                     </p>
+
                                     <p>
-                                        <strong>Área:</strong> {predio.area}
+                                        <strong>Área:</strong>{" "}
+                                        {predio.area || "Sin información"}
                                     </p>
+
                                     <p>
-                                        <strong>Uso:</strong> {predio.uso}
+                                        <strong>Uso:</strong>{" "}
+                                        {predio.uso || "Sin información"}
                                     </p>
+
                                     <p>
-                                        <strong>Estado:</strong> {predio.estado}
+                                        <strong>Estado:</strong>{" "}
+                                        {predio.estado || "Sin información"}
                                     </p>
                                 </div>
                             </Popup>
@@ -401,13 +424,16 @@ function MapView({
 
             {loadingPredios && (
                 <div className="loading-layer">
-                    <div className="loader"></div>
-                    <p>Cargando predios de la zona visible...</p>
+                    <div className="loading-content">
+                        <div className="loader"></div>
+                        <p>Cargando predios de la zona visible...</p>
+                    </div>
                 </div>
             )}
 
             <div className="map-tool-indicator">
                 <strong>Herramienta:</strong>{" "}
+
                 {activeTool === "identificar" && "Identificar predio"}
                 {activeTool === "distancia" && "Medición de distancia"}
                 {activeTool === "area" && "Medición de área"}
@@ -415,16 +441,40 @@ function MapView({
 
             <div className="map-floating-panel">
                 <strong>Predios visibles:</strong>
-                <span> {prediosVisible ? prediosMeta.count : 0}</span>
+                <span>{prediosVisible ? prediosMeta.count : 0}</span>
 
                 {prediosMeta.total > prediosMeta.count && (
                     <small>Mostrando una parte de la vista actual</small>
                 )}
             </div>
 
+            {!legendVisible && (
+                <button
+                    type="button"
+                    className="mobile-legend-toggle"
+                    onClick={onToggleLegend}
+                    aria-label="Mostrar leyenda"
+                    aria-expanded="false"
+                >
+                    <span aria-hidden="true">▤</span>
+                    Leyenda
+                </button>
+            )}
+
             {legendVisible && (
                 <div className="map-legend">
-                    <h3>Leyenda</h3>
+                    <div className="map-legend-header">
+                        <h3>Leyenda</h3>
+
+                        <button
+                            type="button"
+                            className="legend-close-button"
+                            onClick={onToggleLegend}
+                            aria-label="Cerrar leyenda"
+                        >
+                            ×
+                        </button>
+                    </div>
 
                     <div className="legend-item">
                         <span className="legend-color residencial"></span>

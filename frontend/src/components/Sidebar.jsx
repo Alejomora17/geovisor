@@ -45,6 +45,17 @@ function CertificateIcon() {
     );
 }
 
+// [CAMBIO] Icono para el botón de subir capa temporal.
+function UploadIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 15V4" />
+            <path d="m7 9 5-5 5 5" />
+            <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+        </svg>
+    );
+}
+
 function formatCount(value) {
     return new Intl.NumberFormat("es-CO").format(Number(value || 0));
 }
@@ -98,6 +109,11 @@ function Sidebar({
     onActivateAll,
     onClearAll,
     onReloadLayers,
+    // [CAMBIO] Props de capas temporales.
+    temporaryLayers = [],
+    onAddTemporaryLayer,
+    onToggleTemporaryLayer,
+    onRemoveTemporaryLayer,
 }) {
     const groupedLayers = layerCatalog.reduce((groups, layer) => {
         const groupName = layer.group || "Otras capas";
@@ -113,6 +129,18 @@ function Sidebar({
     Object.values(groupedLayers).forEach((layers) => {
         layers.sort((a, b) => a.order - b.order);
     });
+
+    // [CAMBIO] Maneja la selección del archivo GeoJSON.
+    function handleFileChange(event) {
+        const file = event.target.files && event.target.files[0];
+
+        if (file && onAddTemporaryLayer) {
+            onAddTemporaryLayer(file);
+        }
+
+        // Se limpia para poder volver a subir el mismo archivo si se desea.
+        event.target.value = "";
+    }
 
     return (
         <aside className="sidebar" aria-label="Panel lateral del geovisor">
@@ -363,6 +391,88 @@ function Sidebar({
                                     </div>
                                 ))}
                             </div>
+                        </section>
+
+                        {/* [CAMBIO] Sección de capas temporales subidas por el usuario. */}
+                        <section className="panel-section layers-section">
+                            <div className="section-heading">
+                                <div>
+                                    <span className="section-eyebrow">Datos propios</span>
+                                    <h3>Capas temporales</h3>
+                                </div>
+                            </div>
+
+                            <p className="layers-help">
+                                Sube un archivo GeoJSON para verlo sobre el mapa. No se guarda:
+                                desaparece al cerrar o recargar la pestaña.
+                            </p>
+
+                            <label
+                                className="sidebar-certificate-button"
+                                style={{ cursor: "pointer" }}
+                            >
+                                <UploadIcon />
+                                <span>Agregar GeoJSON</span>
+
+                                <input
+                                    type="file"
+                                    accept=".geojson,.json,application/geo+json,application/json"
+                                    onChange={handleFileChange}
+                                    style={{ display: "none" }}
+                                />
+                            </label>
+
+                            {temporaryLayers.length > 0 && (
+                                <div className="layer-list" style={{ marginTop: "0.75rem" }}>
+                                    {temporaryLayers.map((layer) => (
+                                        <div
+                                            className={`layer-item ${layer.visible ? "active" : ""}`}
+                                            key={layer.id}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={layer.visible}
+                                                onChange={() => onToggleTemporaryLayer(layer.id)}
+                                            />
+
+                                            <span className="custom-checkbox" aria-hidden="true" />
+
+                                            <span
+                                                className="layer-swatch polygon"
+                                                style={{
+                                                    backgroundColor: layer.color,
+                                                    borderColor: layer.color,
+                                                }}
+                                                aria-hidden="true"
+                                            />
+
+                                            <span className="layer-copy">
+                                                <strong>{layer.name}</strong>
+                                                <small>{formatCount(layer.count)} entidades</small>
+                                            </span>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => onRemoveTemporaryLayer(layer.id)}
+                                                title="Quitar capa temporal"
+                                                aria-label="Quitar capa temporal"
+                                                style={{
+                                                    marginLeft: "auto",
+                                                    background: "transparent",
+                                                    border: "none",
+                                                    cursor: "pointer",
+                                                    fontSize: "1rem",
+                                                    lineHeight: 1,
+                                                    color: "#64748b",
+                                                    padding: "0.25rem",
+                                                }}
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </section>
                     </div>
                 )}

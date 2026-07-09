@@ -245,6 +245,34 @@ function buildPopupHtml(feature, layerInfo) {
   `;
 }
 
+// [CAMBIO] Popup para las capas temporales: muestra todas las propiedades
+// del feature subido por el usuario (sin conocer su esquema).
+function buildTempPopupHtml(feature, layerName) {
+    const properties = feature?.properties || {};
+
+    const entries = Object.entries(properties)
+        .filter(([key]) => !key.startsWith("_"))
+        .slice(0, 12);
+
+    const rows = entries
+        .map(([key, value]) => {
+            return `
+        <div class="geo-popup-row">
+          <span>${escapeHtml(key)}</span>
+          <strong>${escapeHtml(formatPopupValue(key, value))}</strong>
+        </div>
+      `;
+        })
+        .join("");
+
+    return `
+    <div class="geo-popup">
+      <div class="geo-popup-layer">${escapeHtml(layerName)}</div>
+      ${rows || '<p class="geo-popup-empty">Sin atributos disponibles.</p>'}
+    </div>
+  `;
+}
+
 function getFeatureStyle(layerInfo, feature, selectedPredio) {
     const base = layerInfo.style || {};
     const properties = feature?.properties || {};
@@ -322,6 +350,75 @@ function MapController({ mapConfig, selectedPredio, resetCounter, sidebarCollaps
     }, [sidebarCollapsed, map]);
 
     return null;
+}
+
+// [CAMBIO] Dibuja las capas temporales subidas por el usuario y hace zoom
+// automático a la última que se agregó.
+function TemporaryLayers({ layers }) {
+    const map = useMap();
+    const lastCountRef = useRef(0);
+
+    useEffect(() => {
+        if (layers.length > lastCountRef.current) {
+            const last = layers[layers.length - 1];
+
+            try {
+                const bounds = L.geoJSON(last.data).getBounds();
+
+                if (bounds.isValid()) {
+                    map.fitBounds(bounds, {
+                        padding: [40, 40],
+                        maxZoom: 18,
+                    });
+                }
+            } catch (error) {
+                console.error(
+                    "No se pudo ajustar la vista a la capa temporal:",
+                    error
+                );
+            }
+        }
+
+        lastCountRef.current = layers.length;
+    }, [layers, map]);
+
+    return (
+        <>
+            {layers
+                .filter((layer) => layer.visible)
+                .map((layer) => (
+                    <GeoJSON
+                        key={layer.id}
+                        data={layer.data}
+                        style={{
+                            color: layer.color,
+                            weight: 2,
+                            fillColor: layer.color,
+                            fillOpacity: 0.25,
+                            opacity: 0.95,
+                        }}
+                        pointToLayer={(feature, latlng) =>
+                            L.circleMarker(latlng, {
+                                radius: 6,
+                                color: layer.color,
+                                fillColor: layer.color,
+                                fillOpacity: 0.85,
+                                weight: 2,
+                            })
+                        }
+                        onEachFeature={(feature, leafletLayer) => {
+                            leafletLayer.bindPopup(
+                                buildTempPopupHtml(feature, layer.name),
+                                {
+                                    maxWidth: 320,
+                                    className: "geo-popup-wrapper",
+                                }
+                            );
+                        }}
+                    />
+                ))}
+        </>
+    );
 }
 
 function BoundsWatcher({ onBoundsChange }) {
@@ -465,6 +562,7 @@ function MapView({
     sidebarCollapsed,
     onOpenSidebar,
     loadingLayerIds,
+    temporaryLayers = [],
 }) {
     const [measurementPoints, setMeasurementPoints] = useState([]);
     const [measurementResult, setMeasurementResult] = useState("");
@@ -569,6 +667,8 @@ function MapView({
                         onTerrainClick={onTerrainClick}
                     />
                 ))}
+
+                <TemporaryLayers layers={temporaryLayers} />
 
                 {measurementLine && (
                     <Polyline
@@ -714,6 +814,19 @@ function MapView({
                                 </div>
                             ))
                         )}
+
+                        {temporaryLayers.filter((layer) => layer.visible).map((layer) => (
+                            <div className="map-legend-item" key={layer.id}>
+                                <span
+                                    className="map-legend-swatch polygon"
+                                    style={{
+                                        backgroundColor: layer.color,
+                                        borderColor: layer.color,
+                                    }}
+                                />
+                                <span>{layer.name}</span>
+                            </div>
+                        ))}
 
                         {selectedPredio && (
                             <div className="map-legend-item special">

@@ -10,8 +10,13 @@ const path = require("path");
 const app = express();
 
 const PORT = Number(process.env.PORT || 3001);
-const CERTIFICADO_PASSWORD =
-    process.env.CERTIFICADO_PASSWORD || "1234";
+
+// [CAMBIO] Ya no hay contraseña por defecto "1234".
+// Si la variable de entorno no está definida, el endpoint de
+// certificados quedará deshabilitado (ver más abajo) en lugar de
+// exponer un secreto débil escrito en el código.
+const CERTIFICADO_PASSWORD = process.env.CERTIFICADO_PASSWORD || null;
+
 const DATA_DIR = path.join(__dirname, "data", "guataqui");
 const DEFAULT_LAYER_LIMIT = Number(
     process.env.LIMIT_ELEMENTOS_CAPA || process.env.LIMIT_PREDIOS_BBOX || 5000
@@ -605,6 +610,13 @@ function buildIndexes() {
                 record,
             };
 
+            // [CAMBIO] Índice de búsqueda liviano.
+            // Se precalculan (una sola vez, al arrancar) los valores por los
+            // que se puede buscar, ya normalizados. Así la búsqueda NO tiene
+            // que construir el objeto "predio" completo (geometría, coords,
+            // resumen de construcciones) por cada registro en cada consulta.
+            item.searchable = buildSearchableValues(layerId, properties, code);
+
             terrainRecords.push(item);
 
             if (code) {
@@ -618,7 +630,39 @@ function buildIndexes() {
     });
 }
 
-buildIndexes();
+// [CAMBIO] Calcula, de forma barata (sin geometría), los mismos valores
+// buscables que antes se derivaban del objeto "predio" completo.
+// Devuelve un arreglo normalizado en el MISMO orden que usaba searchTerrains:
+//   [0] codigo, [1] codigoAnterior, [2] zona, [3] barrioOSector,
+//   [4] manzanaCodigo, [5] veredaCodigo, [6] codigoMunicipio
+function buildSearchableValues(layerId, properties, code) {
+    const urban = layerId === "u-terreno";
+
+    const veredaCode = String(properties.VEREDA_CODIGO || "").trim();
+    const blockCode = String(properties.MANZANA_CODIGO || "").trim();
+
+    const codigo = code || "";
+    const codigoAnterior = String(properties.CODIGO_ANTERIOR || "Sin información");
+    const zona = urban ? "Urbana" : "Rural";
+
+    const barrioOSector = urban
+        ? findBarrioName(properties)
+        : veredaNameByCode.get(veredaCode) || "Vereda sin nombre";
+
+    const manzanaCodigo = blockCode || "No aplica";
+    const veredaCodigo = veredaCode || "No aplica";
+    const codigoMunicipio = String(properties.CODIGO_MUNICIPIO || "25324");
+
+    return [
+        codigo,
+        codigoAnterior,
+        zona,
+        barrioOSector,
+        manzanaCodigo,
+        veredaCodigo,
+        codigoMunicipio,
+    ].map(normalizeText);
+}
 
 function findBarrioName(properties) {
     const blockCode = String(properties.MANZANA_CODIGO || "").trim();
@@ -768,7 +812,14 @@ function geometryToLeafletCoordinates(geometry) {
     return converted;
 }
 
-function terrainItemToPredio(item) {
+// [CAMBIO] Nuevo parámetro `options.includeGeometry`.
+// Cuando es false se omiten `geometry` y `coords` (los campos pesados),
+// lo que aligera mucho las respuestas del listado /api/predios.
+// La búsqueda y el detalle lo dejan en true porque el frontend necesita
+// `coords` para hacer zoom al predio seleccionado.
+function terrainItemToPredio(item, options = {}) {
+    const { includeGeometry = true } = options;
+
     const { layerId, record } = item;
     const properties = record.feature.properties || {};
 
@@ -787,7 +838,7 @@ function terrainItemToPredio(item) {
         ? summarizeConstructions(code)
         : summarizeConstructions("");
 
-    return {
+    const predio = {
         id: record.feature.id,
         layerId,
 
@@ -838,12 +889,16 @@ function terrainItemToPredio(item) {
         observacion:
             "Información tomada de las capas vectoriales de prueba de Guataquí.",
 
-        coords: geometryToLeafletCoordinates(record.feature.geometry),
-
-        geometry: record.feature.geometry,
         bbox: record.bbox,
         center: record.center,
     };
+
+    if (includeGeometry) {
+        predio.coords = geometryToLeafletCoordinates(record.feature.geometry);
+        predio.geometry = record.feature.geometry;
+    }
+
+    return predio;
 }
 
 function findTerrainByCode(value) {
@@ -856,6 +911,11 @@ function findTerrainByCode(value) {
     );
 }
 
+// [CAMBIO] Búsqueda optimizada.
+// Antes: se convertía CADA terreno a "predio" completo (con geometría) y
+// luego se comparaba -> O(n) conversiones caras por consulta.
+// Ahora: se compara contra `item.searchable` (precalculado y normalizado)
+// y solo se convierten a "predio" los resultados que caben en el límite.
 function searchTerrains(query, limit = 20) {
     const normalizedQuery = normalizeText(query);
 
@@ -866,37 +926,23 @@ function searchTerrains(query, limit = 20) {
     const exact = [];
     const partial = [];
 
-    terrainRecords.forEach((item) => {
-        const predio = terrainItemToPredio(item);
+    for (const item of terrainRecords) {
+        const values = item.searchable;
 
-        const searchableValues = [
-            predio.codigo,
-            predio.codigoAnterior,
-            predio.zona,
-            predio.barrioOSector,
-            predio.manzanaCodigo,
-            predio.veredaCodigo,
-            predio.codigoMunicipio,
-        ].map(normalizeText);
-
-        if (
-            searchableValues[0] === normalizedQuery ||
-            searchableValues[1] === normalizedQuery
-        ) {
-            exact.push(predio);
-            return;
+        // values[0] = codigo, values[1] = codigoAnterior
+        if (values[0] === normalizedQuery || values[1] === normalizedQuery) {
+            exact.push(item);
+            continue;
         }
 
-        if (
-            searchableValues.some((value) =>
-                value.includes(normalizedQuery)
-            )
-        ) {
-            partial.push(predio);
+        if (values.some((value) => value.includes(normalizedQuery))) {
+            partial.push(item);
         }
-    });
+    }
 
-    return [...exact, ...partial].slice(0, limit);
+    return [...exact, ...partial]
+        .slice(0, limit)
+        .map((item) => terrainItemToPredio(item));
 }
 
 function getFilteredLayerRecords(layer, bbox, center) {
@@ -947,12 +993,15 @@ function addPdfSectionTitle(doc, title) {
     doc.moveDown(0.6);
 }
 
+buildIndexes();
+
 app.get("/healthz", (req, res) => {
     res.status(200).json({
         status: "ok",
         service: "geovisor-guataqui-backend",
         layers: layerStore.size,
         terrains: terrainRecords.length,
+        certificadosHabilitados: Boolean(CERTIFICADO_PASSWORD),
     });
 });
 
@@ -1067,6 +1116,11 @@ app.get("/api/capas/:layerId", (req, res) => {
 
   Une terrenos urbanos y rurales y devuelve
   el formato predio.coords.
+
+  [CAMBIO] El listado ya NO incluye geometría/coords por cada predio
+  (includeGeometry: false). Eso aligera bastante la respuesta. La
+  geometría se obtiene en el detalle /api/predios/:codigo cuando se
+  necesita dibujar/hacer zoom a un predio puntual.
 */
 app.get("/api/predios", (req, res) => {
     const bbox = parseBBox(req.query.bbox);
@@ -1102,7 +1156,7 @@ app.get("/api/predios", (req, res) => {
             itemByRecord.get(record.feature.id)
         )
         .filter(Boolean)
-        .map(terrainItemToPredio);
+        .map((item) => terrainItemToPredio(item, { includeGeometry: false }));
 
     res.json({
         data,
@@ -1160,6 +1214,16 @@ app.get("/api/predios/:codigo", (req, res) => {
 });
 
 app.post("/api/certificados/:codigo", (req, res) => {
+    // [CAMBIO] Si no se configuró la contraseña por variable de entorno,
+    // el endpoint queda deshabilitado en lugar de aceptar un default débil.
+    if (!CERTIFICADO_PASSWORD) {
+        return res.status(503).json({
+            message:
+                "La generación de certificados no está configurada en el servidor. " +
+                "Define la variable de entorno CERTIFICADO_PASSWORD.",
+        });
+    }
+
     const { password } = req.body || {};
 
     if (!password || password !== CERTIFICADO_PASSWORD) {
@@ -1255,147 +1319,51 @@ app.post("/api/certificados/:codigo", (req, res) => {
 
     doc.y = 140;
 
-    addPdfField(
-        doc,
-        "Fecha de generación",
-        generatedAt
-    );
+    addPdfField(doc, "Fecha de generación", generatedAt);
+    addPdfField(doc, "Municipio", "Guataquí, Cundinamarca");
+    addPdfField(doc, "Código DANE", predio.codigoMunicipio);
 
-    addPdfField(
-        doc,
-        "Municipio",
-        "Guataquí, Cundinamarca"
-    );
+    addPdfSectionTitle(doc, "1. Identificación del terreno");
 
-    addPdfField(
-        doc,
-        "Código DANE",
-        predio.codigoMunicipio
-    );
-
-    addPdfSectionTitle(
-        doc,
-        "1. Identificación del terreno"
-    );
-
-    addPdfField(
-        doc,
-        "Código predial",
-        predio.codigo
-    );
-
-    addPdfField(
-        doc,
-        "Código anterior",
-        predio.codigoAnterior
-    );
-
-    addPdfField(
-        doc,
-        "Zona",
-        predio.zona
-    );
-
-    addPdfField(
-        doc,
-        "Área catastral",
-        predio.area
-    );
-
-    addPdfField(
-        doc,
-        "Perímetro",
-        predio.perimetro
-    );
-
-    addPdfField(
-        doc,
-        "Número de subterráneos",
-        predio.numeroSubterraneos
-    );
+    addPdfField(doc, "Código predial", predio.codigo);
+    addPdfField(doc, "Código anterior", predio.codigoAnterior);
+    addPdfField(doc, "Zona", predio.zona);
+    addPdfField(doc, "Área catastral", predio.area);
+    addPdfField(doc, "Perímetro", predio.perimetro);
+    addPdfField(doc, "Número de subterráneos", predio.numeroSubterraneos);
 
     if (predio.zona === "Urbana") {
-        addPdfField(
-            doc,
-            "Código de manzana",
-            predio.manzanaCodigo
-        );
-
-        addPdfField(
-            doc,
-            "Barrio o sector",
-            predio.barrio
-        );
+        addPdfField(doc, "Código de manzana", predio.manzanaCodigo);
+        addPdfField(doc, "Barrio o sector", predio.barrio);
     } else {
-        addPdfField(
-            doc,
-            "Código de vereda",
-            predio.veredaCodigo
-        );
-
-        addPdfField(
-            doc,
-            "Vereda",
-            predio.vereda
-        );
+        addPdfField(doc, "Código de vereda", predio.veredaCodigo);
+        addPdfField(doc, "Vereda", predio.vereda);
     }
 
-    addPdfField(
-        doc,
-        "Última fecha registrada",
-        predio.fechaActualizacion
-    );
+    addPdfField(doc, "Última fecha registrada", predio.fechaActualizacion);
 
     if (predio.zona === "Urbana") {
-        addPdfSectionTitle(
-            doc,
-            "2. Construcciones relacionadas"
-        );
+        addPdfSectionTitle(doc, "2. Construcciones relacionadas");
 
-        addPdfField(
-            doc,
-            "Cantidad de construcciones",
-            predio.construcciones.cantidad
-        );
-
-        addPdfField(
-            doc,
-            "Área construida acumulada",
-            predio.construcciones.areaConstruida
-        );
-
-        addPdfField(
-            doc,
-            "Número máximo de pisos",
-            predio.construcciones.maxPisos
-        );
-
-        addPdfField(
-            doc,
-            "Número máximo de sótanos",
-            predio.construcciones.maxSotanos
-        );
-
+        addPdfField(doc, "Cantidad de construcciones", predio.construcciones.cantidad);
+        addPdfField(doc, "Área construida acumulada", predio.construcciones.areaConstruida);
+        addPdfField(doc, "Número máximo de pisos", predio.construcciones.maxPisos);
+        addPdfField(doc, "Número máximo de sótanos", predio.construcciones.maxSotanos);
         addPdfField(
             doc,
             "Tipos de construcción",
-            predio.construcciones.tipos.join(", ") ||
-            "Sin construcciones registradas"
+            predio.construcciones.tipos.join(", ") || "Sin construcciones registradas"
         );
-
         addPdfField(
             doc,
             "Tipos de dominio",
-            predio.construcciones.dominios.join(", ") ||
-            "Sin información"
+            predio.construcciones.dominios.join(", ") || "Sin información"
         );
     }
 
     addPdfSectionTitle(
         doc,
-        predio.zona === "Urbana"
-            ? "3. Nota de alcance"
-            : "2. Nota de alcance"
+        predio.zona === "Urbana" ? "3. Nota de alcance" : "2. Nota de alcance"
     );
 
     doc
@@ -1435,9 +1403,7 @@ app.use((req, res) => {
 app.use((error, req, res, next) => {
     console.error(error);
 
-    if (
-        error.message?.startsWith("CORS bloqueado")
-    ) {
+    if (error.message?.startsWith("CORS bloqueado")) {
         return res.status(403).json({
             message: error.message,
         });
@@ -1453,31 +1419,19 @@ app.use((error, req, res, next) => {
 });
 
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(
-        `Servidor del geovisor ejecutándose en el puerto ${PORT}`
-    );
+    console.log(`Servidor del geovisor ejecutándose en el puerto ${PORT}`);
+    console.log("Municipio: Guataquí, Cundinamarca");
+    console.log(`Carpeta de capas: ${DATA_DIR}`);
+    console.log(`Capas disponibles: ${layerStore.size}`);
+    console.log(`Terrenos consultables: ${terrainRecords.length}`);
+    console.log(`Límite por petición: ${DEFAULT_LAYER_LIMIT}`);
+    console.log(`Frontends permitidos: ${FRONTEND_URLS.join(", ")}`);
 
-    console.log(
-        "Municipio: Guataquí, Cundinamarca"
-    );
-
-    console.log(
-        `Carpeta de capas: ${DATA_DIR}`
-    );
-
-    console.log(
-        `Capas disponibles: ${layerStore.size}`
-    );
-
-    console.log(
-        `Terrenos consultables: ${terrainRecords.length}`
-    );
-
-    console.log(
-        `Límite por petición: ${DEFAULT_LAYER_LIMIT}`
-    );
-
-    console.log(
-        `Frontends permitidos: ${FRONTEND_URLS.join(", ")}`
-    );
+    // [CAMBIO] Aviso claro si los certificados quedaron sin configurar.
+    if (!CERTIFICADO_PASSWORD) {
+        console.warn(
+            "ADVERTENCIA: CERTIFICADO_PASSWORD no está definida. " +
+            "La generación de certificados PDF estará deshabilitada hasta configurarla."
+        );
+    }
 });

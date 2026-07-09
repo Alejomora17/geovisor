@@ -16,6 +16,41 @@ const FALLBACK_MAP = {
 
 const ELEMENTOS_POR_CAPA = 6000;
 
+// [CAMBIO] Colores para diferenciar capas temporales subidas por el usuario.
+const TEMP_LAYER_COLORS = [
+  "#db2777",
+  "#7c3aed",
+  "#ea580c",
+  "#0891b2",
+  "#ca8a04",
+  "#4f46e5",
+];
+
+// [CAMBIO] Normaliza cualquier GeoJSON (FeatureCollection, Feature suelto
+// o una geometría cruda) a un FeatureCollection para poder dibujarlo.
+function toFeatureCollection(parsed) {
+  if (!parsed || typeof parsed !== "object") {
+    return { type: "FeatureCollection", features: [] };
+  }
+
+  if (parsed.type === "FeatureCollection" && Array.isArray(parsed.features)) {
+    return parsed;
+  }
+
+  if (parsed.type === "Feature") {
+    return { type: "FeatureCollection", features: [parsed] };
+  }
+
+  if (parsed.type && parsed.coordinates) {
+    return {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: {}, geometry: parsed }],
+    };
+  }
+
+  return { type: "FeatureCollection", features: [] };
+}
+
 function isMobileViewport() {
   return (
     typeof window !== "undefined" &&
@@ -51,6 +86,9 @@ function App() {
   const [layerData, setLayerData] = useState({});
   const [loadingLayerIds, setLoadingLayerIds] = useState([]);
   const [layerErrors, setLayerErrors] = useState({});
+
+  // [CAMBIO] Capas temporales (solo en memoria, no se guardan).
+  const [temporaryLayers, setTemporaryLayers] = useState([]);
 
   const [currentBounds, setCurrentBounds] = useState(null);
   const [selectedPredio, setSelectedPredio] = useState(null);
@@ -370,6 +408,71 @@ function App() {
     setSelectedPredio(null);
   }
 
+  // [CAMBIO] Lee un archivo GeoJSON del navegador y lo agrega como capa
+  // temporal en memoria. No se envía al backend ni se persiste.
+  function handleAddTemporaryLayer(file) {
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = (event) => {
+      try {
+        const parsed = JSON.parse(event.target.result);
+        const collection = toFeatureCollection(parsed);
+
+        if (!collection.features.length) {
+          setStatus("El archivo no contiene entidades GeoJSON válidas.");
+          return;
+        }
+
+        setTemporaryLayers((previous) => {
+          const color =
+            TEMP_LAYER_COLORS[previous.length % TEMP_LAYER_COLORS.length];
+
+          const id = `temp-${Date.now()}`;
+          const name = file.name.replace(/\.(geo)?json$/i, "");
+
+          return [
+            ...previous,
+            {
+              id,
+              name,
+              data: collection,
+              color,
+              visible: true,
+              count: collection.features.length,
+            },
+          ];
+        });
+
+        setStatus(`Capa temporal agregada: ${file.name}.`);
+      } catch (error) {
+        console.error("Error leyendo GeoJSON:", error);
+        setStatus(
+          "No se pudo leer el archivo. Verifica que sea un GeoJSON válido."
+        );
+      }
+    };
+
+    reader.readAsText(file);
+  }
+
+  function toggleTemporaryLayer(layerId) {
+    setTemporaryLayers((previous) =>
+      previous.map((layer) =>
+        layer.id === layerId
+          ? { ...layer, visible: !layer.visible }
+          : layer
+      )
+    );
+  }
+
+  function removeTemporaryLayer(layerId) {
+    setTemporaryLayers((previous) =>
+      previous.filter((layer) => layer.id !== layerId)
+    );
+  }
+
   async function searchPredios(event) {
     event?.preventDefault();
 
@@ -590,6 +693,10 @@ function App() {
             onActivateAll={activateAllLayers}
             onClearAll={clearAllLayers}
             onReloadLayers={reloadCurrentView}
+            temporaryLayers={temporaryLayers}
+            onAddTemporaryLayer={handleAddTemporaryLayer}
+            onToggleTemporaryLayer={toggleTemporaryLayer}
+            onRemoveTemporaryLayer={removeTemporaryLayer}
           />
         )}
 
@@ -612,6 +719,7 @@ function App() {
             sidebarCollapsed={sidebarCollapsed}
             onOpenSidebar={() => setSidebarCollapsed(false)}
             loadingLayerIds={loadingLayerIds}
+            temporaryLayers={temporaryLayers}
           />
         </section>
       </main>

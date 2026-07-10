@@ -273,8 +273,6 @@ function buildTempPopupHtml(feature, layerName) {
   `;
 }
 
-// Contenido del popup enriquecido del predio (el que reemplaza al
-// panel izquierdo). Se arma con los campos que ya devuelve el backend.
 function buildPredioPopupHtml(predio) {
     const rows = [
         ["Zona", predio.zona],
@@ -297,22 +295,30 @@ function buildPredioPopupHtml(predio) {
     const rowsHtml = rows
         .map(
             ([label, value]) => `
-        <div class="geo-popup-row">
-          <span>${escapeHtml(label)}</span>
-          <strong>${escapeHtml(value ?? "Sin información")}</strong>
-        </div>
+        <tr>
+          <td style="padding:5px 12px 5px 0;color:#64748b;font-size:12px;white-space:nowrap;vertical-align:top;">${escapeHtml(label)}</td>
+          <td style="padding:5px 0;color:#0f172a;font-size:13px;font-weight:600;text-align:right;word-break:break-word;">${escapeHtml(value ?? "Sin información")}</td>
+        </tr>
       `
         )
         .join("");
 
     return `
-    <div class="geo-popup predio-popup">
-      <div class="geo-popup-layer">Predio catastral</div>
-      <div class="geo-popup-row" style="margin-bottom:6px">
-        <span>Código predial</span>
-        <strong>${escapeHtml(predio.codigo)}</strong>
+    <div style="min-width:250px;max-width:320px;font-family:inherit;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#0f766e;margin-bottom:8px;">
+        Predio catastral
       </div>
-      ${rowsHtml}
+
+      <div style="font-size:11px;color:#64748b;">Código predial</div>
+      <div style="font-size:15px;font-weight:700;color:#0f172a;word-break:break-all;line-height:1.25;margin-bottom:10px;">
+        ${escapeHtml(predio.codigo)}
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;">
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
     </div>
   `;
 }
@@ -485,6 +491,7 @@ function PredioPopup({ predio }) {
 
         const popup = L.popup({
             maxWidth: 340,
+            minWidth: 250,
             className: "geo-popup-wrapper predio-popup-wrapper",
             autoPan: true,
             keepInView: true,

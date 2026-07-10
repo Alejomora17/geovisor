@@ -12,6 +12,23 @@ import {
 import L from "leaflet";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+// Mapas base disponibles. El predeterminado es OSM.
+const BASEMAPS = {
+    osm: {
+        label: "Mapa (OSM)",
+        url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attribution: "&copy; OpenStreetMap contributors",
+        maxZoom: 19,
+    },
+    esri: {
+        label: "Satélite (Esri)",
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attribution:
+            "Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, GIS User Community",
+        maxZoom: 19,
+    },
+};
+
 function PanelIcon() {
     return (
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -51,6 +68,16 @@ function HomeIcon() {
             <path d="m3 11 9-8 9 8" />
             <path d="M5 10v10h14V10" />
             <path d="M9 20v-6h6v6" />
+        </svg>
+    );
+}
+
+function BasemapIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18" />
+            <path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18z" />
         </svg>
     );
 }
@@ -273,6 +300,8 @@ function buildTempPopupHtml(feature, layerName) {
   `;
 }
 
+// Contenido del popup enriquecido del predio (el que reemplaza al
+// panel izquierdo). Se arma con los campos que ya devuelve el backend.
 function buildPredioPopupHtml(predio) {
     const rows = [
         ["Zona", predio.zona],
@@ -490,8 +519,8 @@ function PredioPopup({ predio }) {
         if (!center) return undefined;
 
         const popup = L.popup({
-            maxWidth: 340,
             minWidth: 250,
+            maxWidth: 340,
             className: "geo-popup-wrapper predio-popup-wrapper",
             autoPan: true,
             keepInView: true,
@@ -662,6 +691,10 @@ function MapView({
     const [measurementPoints, setMeasurementPoints] = useState([]);
     const [measurementResult, setMeasurementResult] = useState("");
 
+    // Mapa base activo (OSM por defecto).
+    const [basemap, setBasemap] = useState("osm");
+    const activeBasemap = BASEMAPS[basemap];
+
     useEffect(() => {
         setMeasurementPoints([]);
         setMeasurementResult("");
@@ -748,9 +781,10 @@ function MapView({
                 />
 
                 <TileLayer
-                    attribution="Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, GIS User Community"
-                    url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                    maxZoom={19}
+                    key={basemap}
+                    attribution={activeBasemap.attribution}
+                    url={activeBasemap.url}
+                    maxZoom={activeBasemap.maxZoom}
                 />
 
                 {layers.map(({ info, payload }) => (
@@ -844,6 +878,19 @@ function MapView({
                 </button>
 
                 <span className="floating-tools-divider" />
+
+                <button
+                    type="button"
+                    className={basemap === "esri" ? "active" : ""}
+                    onClick={() =>
+                        setBasemap((current) => (current === "osm" ? "esri" : "osm"))
+                    }
+                    title={`Cambiar mapa base (actual: ${activeBasemap.label})`}
+                    aria-label="Cambiar mapa base"
+                    aria-pressed={basemap === "esri"}
+                >
+                    <BasemapIcon />
+                </button>
 
                 <button
                     type="button"

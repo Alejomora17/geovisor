@@ -16,7 +16,7 @@ const FALLBACK_MAP = {
 
 const ELEMENTOS_POR_CAPA = 6000;
 
-// [CAMBIO] Colores para diferenciar capas temporales subidas por el usuario.
+// Colores para diferenciar capas temporales subidas por el usuario.
 const TEMP_LAYER_COLORS = [
   "#db2777",
   "#7c3aed",
@@ -26,7 +26,7 @@ const TEMP_LAYER_COLORS = [
   "#4f46e5",
 ];
 
-// [CAMBIO] Normaliza cualquier GeoJSON (FeatureCollection, Feature suelto
+// Normaliza cualquier GeoJSON (FeatureCollection, Feature suelto
 // o una geometría cruda) a un FeatureCollection para poder dibujarlo.
 function toFeatureCollection(parsed) {
   if (!parsed || typeof parsed !== "object") {
@@ -87,7 +87,7 @@ function App() {
   const [loadingLayerIds, setLoadingLayerIds] = useState([]);
   const [layerErrors, setLayerErrors] = useState({});
 
-  // [CAMBIO] Capas temporales (solo en memoria, no se guardan).
+  // Capas temporales (solo en memoria, no se guardan).
   const [temporaryLayers, setTemporaryLayers] = useState([]);
 
   const [currentBounds, setCurrentBounds] = useState(null);
@@ -101,8 +101,6 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     isMobileViewport()
   );
-  const [sidebarView, setSidebarView] = useState("buscar");
-
   const [legendVisible, setLegendVisible] = useState(false);
   const [activeTool, setActiveTool] = useState("navegar");
   const [resetCounter, setResetCounter] = useState(0);
@@ -408,7 +406,7 @@ function App() {
     setSelectedPredio(null);
   }
 
-  // [CAMBIO] Lee un archivo GeoJSON del navegador y lo agrega como capa
+  // Lee un archivo GeoJSON del navegador y lo agrega como capa
   // temporal en memoria. No se envía al backend ni se persiste.
   function handleAddTemporaryLayer(file) {
     if (!file) return;
@@ -547,7 +545,6 @@ function App() {
       const predio = await response.json();
 
       setSelectedPredio(predio);
-      setSidebarView("buscar");
       setStatus(`Predio seleccionado: ${predio.codigo}`);
     } catch (error) {
       console.error("Error consultando predio:", error);
@@ -668,23 +665,19 @@ function App() {
       <Header
         selectedPredio={selectedPredio}
         onCertificateClick={openCertificateModal}
+        searchTerm={searchTerm}
+        onSearchTermChange={setSearchTerm}
+        onSearch={searchPredios}
+        searchResults={searchResults}
+        searchLoading={searchLoading}
+        searchError={searchError}
+        onSelectResult={selectSearchResult}
       />
 
       <main className="app-body">
         {!sidebarCollapsed && (
           <Sidebar
-            activeView={sidebarView}
-            onViewChange={setSidebarView}
             onClose={() => setSidebarCollapsed(true)}
-            searchTerm={searchTerm}
-            onSearchTermChange={setSearchTerm}
-            onSearch={searchPredios}
-            searchResults={searchResults}
-            searchLoading={searchLoading}
-            searchError={searchError}
-            onSelectResult={selectSearchResult}
-            selectedPredio={selectedPredio}
-            onGenerateCertificate={openCertificateModal}
             layerCatalog={layerCatalog}
             activeLayerIds={activeLayerIds}
             loadingLayerIds={loadingLayerIds}

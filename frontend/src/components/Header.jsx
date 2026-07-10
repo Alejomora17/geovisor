@@ -1,4 +1,23 @@
-function Header({ selectedPredio, onCertificateClick }) {
+function SearchIcon() {
+    return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-4-4" />
+        </svg>
+    );
+}
+
+function Header({
+    selectedPredio,
+    onCertificateClick,
+    searchTerm,
+    onSearchTermChange,
+    onSearch,
+    searchResults = [],
+    searchLoading,
+    searchError,
+    onSelectResult,
+}) {
     return (
         <header className="app-header">
             <div className="header-brand">
@@ -14,6 +33,53 @@ function Header({ selectedPredio, onCertificateClick }) {
 
                     <p>Consulta geográfica y predial · Guataquí, Cundinamarca</p>
                 </div>
+            </div>
+
+            {/* Buscador de predio movido al header. */}
+            <div className="header-search">
+                <form className="header-search-form" onSubmit={onSearch}>
+                    <span className="header-search-icon" aria-hidden="true">
+                        <SearchIcon />
+                    </span>
+
+                    <input
+                        type="search"
+                        value={searchTerm}
+                        onChange={(event) => onSearchTermChange(event.target.value)}
+                        placeholder="Buscar por código predial, vereda o sector"
+                        aria-label="Buscar predio"
+                        autoComplete="off"
+                    />
+
+                    <button type="submit" disabled={searchLoading}>
+                        {searchLoading ? "Buscando..." : "Buscar"}
+                    </button>
+                </form>
+
+                {(searchError || searchResults.length > 0) && (
+                    <div className="header-search-results">
+                        {searchError && (
+                            <p className="header-search-error">{searchError}</p>
+                        )}
+
+                        {searchResults.map((predio) => (
+                            <button
+                                type="button"
+                                className="header-search-result"
+                                key={`${predio.layerId}-${predio.id}-${predio.codigo}`}
+                                onClick={() => onSelectResult(predio)}
+                            >
+                                <span className="result-zone">{predio.zona}</span>
+                                <strong>{predio.codigo}</strong>
+                                <small>
+                                    {predio.barrioOSector ||
+                                        predio.vereda ||
+                                        predio.barrio}
+                                </small>
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
 
             <div className="header-actions">

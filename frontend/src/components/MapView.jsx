@@ -245,7 +245,7 @@ function buildPopupHtml(feature, layerInfo) {
   `;
 }
 
-// [CAMBIO] Popup para las capas temporales: muestra todas las propiedades
+// Popup para las capas temporales: muestra todas las propiedades
 // del feature subido por el usuario (sin conocer su esquema).
 function buildTempPopupHtml(feature, layerName) {
     const properties = feature?.properties || {};
@@ -269,6 +269,50 @@ function buildTempPopupHtml(feature, layerName) {
     <div class="geo-popup">
       <div class="geo-popup-layer">${escapeHtml(layerName)}</div>
       ${rows || '<p class="geo-popup-empty">Sin atributos disponibles.</p>'}
+    </div>
+  `;
+}
+
+// Contenido del popup enriquecido del predio (el que reemplaza al
+// panel izquierdo). Se arma con los campos que ya devuelve el backend.
+function buildPredioPopupHtml(predio) {
+    const rows = [
+        ["Zona", predio.zona],
+        ["Área", predio.area],
+        ["Perímetro", predio.perimetro],
+        [
+            predio.zona === "Urbana" ? "Barrio o sector" : "Vereda",
+            predio.barrioOSector,
+        ],
+        ["Código anterior", predio.codigoAnterior],
+        ["Código municipal", predio.codigoMunicipio],
+    ];
+
+    if (predio.zona === "Urbana") {
+        rows.push(["Construcciones", predio.construcciones?.cantidad ?? 0]);
+    }
+
+    rows.push(["Última fecha", predio.fechaActualizacion]);
+
+    const rowsHtml = rows
+        .map(
+            ([label, value]) => `
+        <div class="geo-popup-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value ?? "Sin información")}</strong>
+        </div>
+      `
+        )
+        .join("");
+
+    return `
+    <div class="geo-popup predio-popup">
+      <div class="geo-popup-layer">Predio catastral</div>
+      <div class="geo-popup-row" style="margin-bottom:6px">
+        <span>Código predial</span>
+        <strong>${escapeHtml(predio.codigo)}</strong>
+      </div>
+      ${rowsHtml}
     </div>
   `;
 }
@@ -352,7 +396,7 @@ function MapController({ mapConfig, selectedPredio, resetCounter, sidebarCollaps
     return null;
 }
 
-// [CAMBIO] Dibuja las capas temporales subidas por el usuario y hace zoom
+// Dibuja las capas temporales subidas por el usuario y hace zoom
 // automático a la última que se agregó.
 function TemporaryLayers({ layers }) {
     const map = useMap();
@@ -421,6 +465,43 @@ function TemporaryLayers({ layers }) {
     );
 }
 
+// Muestra la información del predio seleccionado en un popup sobre
+// el mapa (en lugar del panel izquierdo). Se abre en el centro del predio.
+function PredioPopup({ predio }) {
+    const map = useMap();
+
+    useEffect(() => {
+        if (!predio) return undefined;
+
+        let center = null;
+
+        if (predio.center && Number.isFinite(predio.center.lat)) {
+            center = [predio.center.lat, predio.center.lng];
+        } else if (predio.coords?.length) {
+            center = L.latLngBounds(predio.coords).getCenter();
+        }
+
+        if (!center) return undefined;
+
+        const popup = L.popup({
+            maxWidth: 340,
+            className: "geo-popup-wrapper predio-popup-wrapper",
+            autoPan: true,
+            keepInView: true,
+        })
+            .setLatLng(center)
+            .setContent(buildPredioPopupHtml(predio));
+
+        popup.openOn(map);
+
+        return () => {
+            map.closePopup(popup);
+        };
+    }, [predio, map]);
+
+    return null;
+}
+
 function BoundsWatcher({ onBoundsChange }) {
     const map = useMap();
 
@@ -481,10 +562,17 @@ function LayerGeoJson({
     };
 
     function onEachFeature(feature, leafletLayer) {
-        leafletLayer.bindPopup(buildPopupHtml(feature, layerInfo), {
-            maxWidth: 320,
-            className: "geo-popup-wrapper",
-        });
+        const isTerrain = ["u-terreno", "r-terreno"].includes(layerInfo.id);
+
+        // Los terrenos ya no usan el popup genérico: al hacer clic se
+        // abre el popup enriquecido del predio (PredioPopup). El popup genérico
+        // se mantiene para las demás capas (vías, veredas, barrios, etc.).
+        if (!isTerrain) {
+            leafletLayer.bindPopup(buildPopupHtml(feature, layerInfo), {
+                maxWidth: 320,
+                className: "geo-popup-wrapper",
+            });
+        }
 
         if (["r-vereda", "u-barrio"].includes(layerInfo.id)) {
             const label = feature.properties?.NOMBRE;
@@ -669,6 +757,8 @@ function MapView({
                 ))}
 
                 <TemporaryLayers layers={temporaryLayers} />
+
+                <PredioPopup predio={selectedPredio} />
 
                 {measurementLine && (
                     <Polyline
